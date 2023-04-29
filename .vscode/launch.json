@@ -1,0 +1,48 @@
+{
+    // 使用 IntelliSense 了解相关属性。 
+    // 悬停以查看现有属性的描述。
+    // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+
+        {
+            "name": "base-mean",
+            "type": "python",
+            "request": "launch",
+            // "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "cwd": "/home/zsc/lxf_workspace/ConsistentTeacher",
+            "python": "/home/zsc/anaconda3/envs/ConsistentTeacher/bin/python",
+            "program": "/home/zsc/anaconda3/envs/ConsistentTeacher/lib/python3.7/site-packages/torch/distributed/launch.py",
+            "env": {"CUDA_VISIBLE_DEVICES":"0,1"},
+            "args": [
+                "--nproc_per_node=2",
+                "--master_port=29504",
+                "tools/train.py",
+                "configs/baseline/mean_teacher_retinanet_r50_fpn_coco_180k_10p_2x8_fp16.py",
+                "--launcher","pytorch",
+            ]
+        },
+
+        {
+            "name": "disambiguate-mean",
+            "type": "python",
+            "request": "launch",
+            // "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "cwd": "/home/zsc/lxf_workspace/ConsistentTeacher",
+            "python": "/home/zsc/anaconda3/envs/ConsistentTeacher/bin/python",
+            "program": "/home/zsc/anaconda3/envs/ConsistentTeacher/lib/python3.7/site-packages/torch/distributed/launch.py",
+            "env": {"CUDA_VISIBLE_DEVICES":"0,1"},
+            "args": [
+                "--nproc_per_node=2",
+                "--master_port=29504",
+                "tools/train.py",
+                "configs/baseline/mean_teacher_disambiguate_focal_180k_10p_2x8_fp16.py",
+                "--launcher","pytorch",
+            ]
+        },
+    ]
+}
