@@ -1,0 +1,5 @@
+/wandb/*
+/work_dirs/*
+/data/*
+/thirdparty/*
+.vscode/*
