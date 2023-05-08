@@ -9,7 +9,7 @@ from ssod.utils import log_every_n, log_image_with_boxes
 from ssod.utils.structure_utils import dict_split, weighted_loss
 
 from .multi_stream_detector import MultiSteamDetector
-from .utils import Transform2D, filter_invalid, filter_invalid_with_logits
+from .utils import Transform2D, filter_invalid, filter_invalid_with_logits,filter_invalid_without_logits
 
 
 @DETECTORS.register_module()
@@ -24,6 +24,13 @@ class DisambiguateFocalMeanTeacher(MultiSteamDetector):
             self.freeze("teacher")
             self.unsup_weight = self.train_cfg.unsup_weight
         self.writer = None
+        self.iter = 0
+        self.formal_stage = False
+
+    def set_iter(self, step):
+        self.iter = step
+        # if self.iter > self.train_cfg.get('warmup_step', -1):
+        #     self.formal_stage = True
 
     def forward_train(self, img, img_metas, **kwargs):
         super().forward_train(img, img_metas, **kwargs)
@@ -52,6 +59,12 @@ class DisambiguateFocalMeanTeacher(MultiSteamDetector):
             sup_loss = {"sup_" + k: v for k, v in sup_loss.items()}
             loss.update(**sup_loss)
         if "unsup_student" in data_groups:
+
+            if self.iter > self.train_cfg.get('warmup_step', -1):
+                self.formal_stage = True
+            else:
+                self.formal_stage = False
+                
             unsup_loss = weighted_loss(
                 self.foward_unsup_train(
                     data_groups["unsup_teacher"], data_groups["unsup_student"]
@@ -96,12 +109,20 @@ class DisambiguateFocalMeanTeacher(MultiSteamDetector):
         snames = [meta["filename"] for meta in student_data["img_metas"]]
         tidx = [tnames.index(name) for name in snames]
         with torch.no_grad():
-            teacher_info = self.extract_teacher_info(
-                teacher_data["img"][
-                    torch.Tensor(tidx).to(teacher_data["img"].device).long()
-                ],
-                [teacher_data["img_metas"][idx] for idx in tidx]
-            )
+            if self.formal_stage:
+                teacher_info = self.extract_teacher_info_with_logit(
+                    teacher_data["img"][
+                        torch.Tensor(tidx).to(teacher_data["img"].device).long()
+                    ],
+                    [teacher_data["img_metas"][idx] for idx in tidx]
+                )
+            else:
+                teacher_info = self.extract_teacher_info(
+                    teacher_data["img"][
+                        torch.Tensor(tidx).to(teacher_data["img"].device).long()
+                    ],
+                    [teacher_data["img_metas"][idx] for idx in tidx]
+                )
         student_info = self.extract_student_info(**student_data)
 
         return self.compute_pseudo_label_loss(student_info, teacher_info)
@@ -117,21 +138,79 @@ class DisambiguateFocalMeanTeacher(MultiSteamDetector):
             [meta["img_shape"] for meta in student_info["img_metas"]],
         )
         pseudo_labels = teacher_info["det_labels"]
-        pseudo_logits = teacher_info["det_logits"]
 
         loss = {}
-        bbox_loss, proposal_list = self.bbox_loss(
-            student_info["bbox_out"],
-            pseudo_bboxes,
-            pseudo_labels,
-            pseudo_logits,
-            student_info["img_metas"],
-            student_info=student_info,
-        )
+
+        if self.formal_stage:
+            pseudo_logits = teacher_info["det_logits"]
+            bbox_loss, proposal_list = self.bbox_loss_with_logit(
+                student_info["bbox_out"],
+                pseudo_bboxes,
+                pseudo_labels,
+                student_info["img_metas"],
+                pseudo_logits,
+                student_info=student_info,
+            )
+        else:
+            bbox_loss, proposal_list = self.bbox_loss(
+                student_info["bbox_out"],
+                pseudo_bboxes,
+                pseudo_labels,
+                student_info["img_metas"],
+                student_info=student_info,
+            )
+
         loss.update(bbox_loss)
         return loss
-
+    
     def bbox_loss(
+        self,
+        bbox_out,
+        pseudo_bboxes,
+        pseudo_labels,
+        img_metas,
+        gt_bboxes_ignore=None,
+        student_info=None,
+        **kwargs,
+    ):
+        gt_bboxes, gt_labels, _ = multi_apply(
+            filter_invalid,
+            [bbox[:, :4] for bbox in pseudo_bboxes],
+            pseudo_labels,
+            [bbox[:, 4] for bbox in pseudo_bboxes],
+            thr=self.train_cfg.cls_pseudo_threshold,
+        )
+        num_gts = [len(bbox) for bbox in gt_bboxes]
+        log_every_n(
+            {"bbox_gt_num": sum(num_gts) / len(gt_bboxes)}
+        )
+        loss_inputs = bbox_out + [gt_bboxes, gt_labels, img_metas]
+        losses = self.student.bbox_head.loss(
+            *loss_inputs, gt_bboxes_ignore=gt_bboxes_ignore
+        )
+        if len([n for n in num_gts if n > 0]) < len(num_gts) / 2.:
+            # TODO: Design a better way to deal with images without pseudo bbox.
+            losses = weighted_loss(
+                losses, weight=self.train_cfg.get('background_weight', 1e-2))
+        losses['num_gts'] = torch.tensor(
+            sum([len(bbox) for bbox in gt_bboxes]) / len(gt_bboxes)).to(
+            gt_bboxes[0])
+        bbox_list = self.student.bbox_head.get_bboxes(
+            *bbox_out, img_metas=img_metas)
+
+        log_image_with_boxes(
+            "bbox",
+            student_info["img"][0],
+            gt_bboxes[0],
+            bbox_tag="pseudo_label",
+            labels=gt_labels[0],
+            class_names=self.CLASSES,
+            interval=500,
+            img_norm_cfg=student_info["img_metas"][0]["img_norm_cfg"]
+        )
+        return losses, bbox_list
+
+    def bbox_loss_with_logit(
         self,
         bbox_out,
         pseudo_bboxes,
@@ -142,6 +221,7 @@ class DisambiguateFocalMeanTeacher(MultiSteamDetector):
         student_info=None,
         **kwargs,
     ):
+       
         # cls_pseudo_threshold=0.5,
         gt_bboxes, gt_labels, _ = multi_apply(
             filter_invalid,
@@ -150,7 +230,8 @@ class DisambiguateFocalMeanTeacher(MultiSteamDetector):
             [bbox[:, 4] for bbox in pseudo_bboxes],
             # thr=self.train_cfg.cls_pseudo_threshold,
             thr=0,  # keep all the proposal
-        )
+            )
+        
         num_gts = [len(bbox) for bbox in gt_bboxes]
         log_every_n(
             {"bbox_gt_num": sum(num_gts) / len(gt_bboxes)}
@@ -158,15 +239,12 @@ class DisambiguateFocalMeanTeacher(MultiSteamDetector):
 
         # pseduo_logits 
         gt_logits = pseudo_logits
-
+    
         loss_inputs = bbox_out + [gt_bboxes, gt_labels, img_metas]
-        # disambiguate_focal.py loss
-        # losses = self.student.bbox_head.loss(
-        #     *loss_inputs, gt_bboxes_ignore=gt_bboxes_ignore
-        # )
 
         losses = self.student.bbox_head.loss(
-            *loss_inputs, gt_logits=gt_logits, gt_bboxes_ignore=gt_bboxes_ignore
+            *loss_inputs, gt_bboxes_ignore=gt_bboxes_ignore, 
+            gt_logits=gt_logits, formal_stage=self.formal_stage
         )
 
         if len([n for n in num_gts if n > 0]) < len(num_gts) / 2.:
@@ -215,14 +293,14 @@ class DisambiguateFocalMeanTeacher(MultiSteamDetector):
         ]
         return student_info
 
-    def extract_teacher_info(self, img, img_metas, **kwargs):
+    def extract_teacher_info_with_logit(self, img, img_metas, **kwargs):
         teacher_info = {}
         feat = self.teacher.extract_feat(img)
         teacher_info["backbone_feature"] = feat
 
         # return det_bboxes, det_labels, det_logits
         results = \
-            self.teacher.bbox_head.simple_test_bboxes(
+            self.teacher.bbox_head.simple_test_bboxes_teacher(
                 feat, img_metas, rescale=False)
 
         # return bbox, label, logit
@@ -242,11 +320,11 @@ class DisambiguateFocalMeanTeacher(MultiSteamDetector):
         
         proposal_logit_list = [r[2] for r in results]
         proposal_logit_list = [p.to(feat[0].device)
-                               for p in proposal_logit_list]
+                            for p in proposal_logit_list]
         proposal_logit_list = [
             p if p.shape[0] > 0 else p.new_zeros(0, 80) for p in proposal_logit_list
         ]
-        
+            
         # filter invalid box roughly
         # pseudo_label_initial_score_thr=0.5,
         if isinstance(self.train_cfg.pseudo_label_initial_score_thr, float):
@@ -255,6 +333,7 @@ class DisambiguateFocalMeanTeacher(MultiSteamDetector):
             # TODO: use dynamic threshold
             raise NotImplementedError(
                 "Dynamic Threshold is not implemented yet.")
+
         proposal_list, proposal_label_list, proposal_logit_list, _ = list(
             zip(
                 *[
@@ -263,7 +342,8 @@ class DisambiguateFocalMeanTeacher(MultiSteamDetector):
                         proposal_label,
                         proposal_logit,
                         proposal[:, -1],
-                        thr=thr,
+                        # thr=thr,
+                        thr=0,
                         min_size=self.train_cfg.min_pseduo_box_size,
                     )
                     for proposal, proposal_label, proposal_logit in zip(
@@ -271,7 +351,8 @@ class DisambiguateFocalMeanTeacher(MultiSteamDetector):
                     )
                 ]
             )
-        )
+        )       
+
         det_bboxes = proposal_list
         det_labels = proposal_label_list
         teacher_info["det_bboxes"] = det_bboxes
@@ -288,36 +369,56 @@ class DisambiguateFocalMeanTeacher(MultiSteamDetector):
         teacher_info["img_metas"] = img_metas
         return teacher_info
     
-    # # return logit label
-    # def simple_test_bboxes_teacher(self, feats, img_metas, rescale=False):
-    #     """Test det bboxes without test-time augmentation, can be applied in
-    #     DenseHead except for ``RPNHead`` and its variants, e.g., ``GARPNHead``,
-    #     etc.
-
-    #     Args:
-    #         feats (tuple[torch.Tensor]): Multi-level features from the
-    #             upstream network, each is a 4D-tensor.
-    #         img_metas (list[dict]): List of image information.
-    #         rescale (bool, optional): Whether to rescale the results.
-    #             Defaults to False.
-
-    #     Returns:
-    #         list[tuple[Tensor, Tensor]]: Each item in result_list is 2-tuple.
-    #             The first item is ``bboxes`` with shape (n, 5),
-    #             where 5 represent (tl_x, tl_y, br_x, br_y, score).
-    #             The shape of the second tensor in the tuple is ``labels``
-    #             with shape (n,)
-    #     """
-    #     # forward return cls_score, bbox_pred
-    #     # out[0] cls_score 5 level [b, 720, w, h]  -> each level 9 anchor?
-    #     # out[1] bbox_pred 5 level [b, 36, w, h]
-    #     outs = self.teacher.bbox_head.forward(feats)
-
-    #     # overload get_bboxes function to get logit label
-    #     results_list = self.get_bboxes(
-    #         *outs, img_metas=img_metas, rescale=rescale)
-    #     return results_list
-
+    def extract_teacher_info(self, img, img_metas, **kwargs):
+        teacher_info = {}
+        feat = self.teacher.extract_feat(img)
+        teacher_info["backbone_feature"] = feat
+        results = \
+            self.teacher.bbox_head.simple_test_bboxes(
+                feat, img_metas, rescale=False)
+        proposal_list = [r[0] for r in results]
+        proposal_label_list = [r[1] for r in results]
+        proposal_list = [p.to(feat[0].device) for p in proposal_list]
+        proposal_list = [
+            p if p.shape[0] > 0 else p.new_zeros(0, 5) for p in proposal_list
+        ]
+        proposal_label_list = [p.to(feat[0].device)
+                               for p in proposal_label_list]
+        # filter invalid box roughly
+        # pseudo_label_initial_score_thr=0.5,
+        if isinstance(self.train_cfg.pseudo_label_initial_score_thr, float):
+            thr = self.train_cfg.pseudo_label_initial_score_thr
+        else:
+            # TODO: use dynamic threshold
+            raise NotImplementedError(
+                "Dynamic Threshold is not implemented yet.")
+        proposal_list, proposal_label_list, _ = list(
+            zip(
+                *[
+                    filter_invalid(
+                        proposal,
+                        proposal_label,
+                        proposal[:, -1],
+                        thr=thr,
+                        min_size=self.train_cfg.min_pseduo_box_size,
+                    )
+                    for proposal, proposal_label in zip(
+                        proposal_list, proposal_label_list
+                    )
+                ]
+            )
+        )
+        det_bboxes = proposal_list
+        det_labels = proposal_label_list
+        teacher_info["det_bboxes"] = det_bboxes
+        teacher_info["det_labels"] = det_labels
+        teacher_info["transform_matrix"] = [
+            torch.from_numpy(meta["transform_matrix"]
+                             ).float().to(feat[0][0].device)
+            for meta in img_metas
+        ]
+        teacher_info["img_metas"] = img_metas
+        return teacher_info
 
     def _load_from_state_dict(
         self,

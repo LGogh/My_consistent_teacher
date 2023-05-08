@@ -34,7 +34,12 @@ class SubModulesDistEvalHook(DistEvalHook):
                     hook.commit = _commit_state
             runner.log_buffer.clear()
 
-            self._do_evaluate(runner)
+            import torch, gc
+            gc.collect()
+            torch.cuda.empty_cache()
+
+            with torch.no_grad():
+                self._do_evaluate(runner)
 
     def _do_evaluate(self, runner):
         """perform evaluation and save ckpt."""

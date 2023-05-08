@@ -255,6 +255,42 @@ def filter_invalid(bbox, label=None, score=None, mask=None, thr=0.0, min_size=0)
 
 
 def filter_invalid_with_logits(bbox, label=None, logit=None, score=None, mask=None, thr=0.0, min_size=0):
+    # if score is not None:
+    #     valid = score > thr
+    #     bbox = bbox[valid]
+    #     if label is not None:
+    #         label = label[valid]
+    #     if mask is not None:
+    #         mask = BitmapMasks(mask.masks[valid.cpu().numpy()], mask.height, mask.width)
+    #     if logit is not None:
+    #         logit = logit[valid]
+    if min_size is not None:
+        bw = bbox[:, 2] - bbox[:, 0]
+        bh = bbox[:, 3] - bbox[:, 1]
+        valid = (bw > min_size) & (bh > min_size)
+        bbox = bbox[valid]
+        if label is not None:
+            label = label[valid]
+        if mask is not None:
+            mask = BitmapMasks(mask.masks[valid.cpu().numpy()], mask.height, mask.width)
+        if logit is not None:
+            logit = logit[valid]
+    
+    if logit is not None:
+        top2_score, _ = torch.topk(logit, 2, dim=-1)
+        detal = top2_score[:, 0] - top2_score[:, 1]
+        valid = (detal < 0.1) | (detal > 0.5)
+        bbox = bbox[valid]
+        if label is not None:
+            label = label[valid]
+        if mask is not None:
+            mask = BitmapMasks(mask.masks[valid.cpu().numpy()], mask.height, mask.width)
+        if logit is not None:
+            logit = logit[valid]
+        
+    return bbox, label, logit, mask
+
+def filter_invalid_without_logits(bbox, label=None, logit=None, score=None, mask=None, thr=0.0, min_size=0):
     if score is not None:
         valid = score > thr
         bbox = bbox[valid]
@@ -275,6 +311,18 @@ def filter_invalid_with_logits(bbox, label=None, logit=None, score=None, mask=No
             mask = BitmapMasks(mask.masks[valid.cpu().numpy()], mask.height, mask.width)
         if logit is not None:
             logit = logit[valid]
+    
+    # if logit is not None:
+    #     top2_score, _ = torch.topk(logit, 2, dim=-1)
+    #     detal = top2_score[:, 0] - top2_score[:, 1]
+    #     valid = (detal < 0.1) | (detal > 0.5)
+    #     bbox = bbox[valid]
+    #     if label is not None:
+    #         label = label[valid]
+    #     if mask is not None:
+    #         mask = BitmapMasks(mask.masks[valid.cpu().numpy()], mask.height, mask.width)
+    #     if logit is not None:
+    #         logit = logit[valid]
         
     return bbox, label, logit, mask
 

@@ -4,3 +4,4 @@ from .consistent_teacher import ConsistentTeacher
 from .dense_heads import *
 
 from .disambiguate_focal_mean_teacher import DisambiguateFocalMeanTeacher
+from .warmup_disambiguate_focal import WarmupDisambiguateFocalMeanTeacher

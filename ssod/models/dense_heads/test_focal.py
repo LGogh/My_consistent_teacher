@@ -14,7 +14,7 @@ from mmcv.ops import batched_nms
 
 
 @HEADS.register_module()
-class DisambiguateFocalHead(AnchorHead):
+class TestDisambiguateFocalHead(AnchorHead):
     """Mostly the same with ATSS except for the anchor assignment. 
 
     ATSS head structure is similar with FCOS, however ATSS use anchor boxes
@@ -43,7 +43,7 @@ class DisambiguateFocalHead(AnchorHead):
         self.stacked_convs = stacked_convs
         self.conv_cfg = conv_cfg
         self.norm_cfg = norm_cfg
-        super(DisambiguateFocalHead, self).__init__(
+        super(TestDisambiguateFocalHead, self).__init__(
             num_classes,
             in_channels,
             reg_decoded_bbox=reg_decoded_bbox,
@@ -136,7 +136,7 @@ class DisambiguateFocalHead(AnchorHead):
         bbox_pred = scale(self.atss_reg(reg_feat)).float()
         return cls_score, bbox_pred
     
-    def simple_test_bboxes_teacher(self, feats, img_metas, rescale=False):
+    def simple_test_bboxes(self, feats, img_metas, rescale=False):
         """Test det bboxes without test-time augmentation, can be applied in
         DenseHead except for ``RPNHead`` and its variants, e.g., ``GARPNHead``,
         etc.
@@ -156,13 +156,13 @@ class DisambiguateFocalHead(AnchorHead):
                 with shape (n,)
         """
         outs = self.forward(feats)
-        results_list = self.get_bboxes_teacher(
+        results_list = self.get_bboxes(
             *outs, img_metas=img_metas, rescale=rescale)
         return results_list
     
     # mmdet/models/dense_heads/base_dense_head.py
     @force_fp32(apply_to=('cls_scores', 'bbox_preds'))
-    def get_bboxes_teacher(self,
+    def get_bboxes(self,
                    cls_scores,
                    bbox_preds,
                    score_factors=None,
@@ -214,9 +214,8 @@ class DisambiguateFocalHead(AnchorHead):
             assert len(cls_scores) == len(score_factors)
 
         num_levels = len(cls_scores)
-        # 5 levels
+
         featmap_sizes = [cls_scores[i].shape[-2:] for i in range(num_levels)]
-        # grid priors 网格先验框，每个格点有9个框，如featmap_size[4] -> [8, 10] 8*10*9=720
         mlvl_priors = self.prior_generator.grid_priors(
             featmap_sizes,
             dtype=cls_scores[0].dtype,
@@ -233,14 +232,14 @@ class DisambiguateFocalHead(AnchorHead):
             else:
                 score_factor_list = [None for _ in range(num_levels)]
 
-            results = self._get_bboxes_single_teacher(cls_score_list, bbox_pred_list,
+            results = self._get_bboxes_single(cls_score_list, bbox_pred_list,
                                               score_factor_list, mlvl_priors,
                                               img_meta, cfg, rescale, with_nms,
                                               **kwargs)
             result_list.append(results)
         return result_list
 
-    def _get_bboxes_single_teacher(self,
+    def _get_bboxes_single(self,
                            cls_score_list,
                            bbox_pred_list,
                            score_factor_list,
@@ -304,8 +303,6 @@ class DisambiguateFocalHead(AnchorHead):
         mlvl_bboxes = []
         mlvl_scores = []
         mlvl_labels = []
-
-        mlvl_logits = []
         if with_score_factors:
             mlvl_score_factors = []
         else:
@@ -315,16 +312,13 @@ class DisambiguateFocalHead(AnchorHead):
                               score_factor_list, mlvl_priors)):
 
             assert cls_score.size()[-2:] == bbox_pred.size()[-2:]
-            
-            # [9*4, w, h] -> [w*h*9, 4]
+
             bbox_pred = bbox_pred.permute(1, 2, 0).reshape(-1, 4)
             if with_score_factors:
                 score_factor = score_factor.permute(1, 2,
                                                     0).reshape(-1).sigmoid()
-            # [9*80, w, h] -> [w*h*9, 80]
             cls_score = cls_score.permute(1, 2,
                                           0).reshape(-1, self.cls_out_channels)
-            
             if self.use_sigmoid_cls:
                 scores = cls_score.sigmoid()
             else:
@@ -343,11 +337,6 @@ class DisambiguateFocalHead(AnchorHead):
                 dict(bbox_pred=bbox_pred, priors=priors))
             scores, labels, keep_idxs, filtered_results = results
 
-            # get the soft label?
-            # sigmoid sum != 1
-            logits = cls_score.softmax(-1)
-            logits = logits[keep_idxs]
-
             bbox_pred = filtered_results['bbox_pred']
             priors = filtered_results['priors']
 
@@ -360,19 +349,17 @@ class DisambiguateFocalHead(AnchorHead):
             mlvl_bboxes.append(bboxes)
             mlvl_scores.append(scores)
             mlvl_labels.append(labels)
-            mlvl_logits.append(logits)
             if with_score_factors:
                 mlvl_score_factors.append(score_factor)
 
-        return self._bbox_post_process_teacher(mlvl_scores, mlvl_labels, mlvl_bboxes, mlvl_logits,
+        return self._bbox_post_process(mlvl_scores, mlvl_labels, mlvl_bboxes,
                                        img_meta['scale_factor'], cfg, rescale,
                                        with_nms, mlvl_score_factors, **kwargs)
 
-    def _bbox_post_process_teacher(self,
+    def _bbox_post_process(self,
                            mlvl_scores,
                            mlvl_labels,
                            mlvl_bboxes,
-                           mlvl_logits,
                            scale_factor,
                            cfg,
                            rescale=False,
@@ -419,14 +406,13 @@ class DisambiguateFocalHead(AnchorHead):
                 - det_labels (Tensor): Predicted labels of the corresponding \
                     box with shape [num_bboxes].
         """
-        assert len(mlvl_scores) == len(mlvl_bboxes) == len(mlvl_labels) == len(mlvl_logits)
+        assert len(mlvl_scores) == len(mlvl_bboxes) == len(mlvl_labels)
 
         mlvl_bboxes = torch.cat(mlvl_bboxes)
         if rescale:
             mlvl_bboxes /= mlvl_bboxes.new_tensor(scale_factor)
         mlvl_scores = torch.cat(mlvl_scores)
         mlvl_labels = torch.cat(mlvl_labels)
-        mlvl_logits = torch.cat(mlvl_logits)
 
         if mlvl_score_factors is not None:
             # TODO： Add sqrt operation in order to be consistent with
@@ -443,10 +429,9 @@ class DisambiguateFocalHead(AnchorHead):
                                                 mlvl_labels, cfg.nms)
             det_bboxes = det_bboxes[:cfg.max_per_img]
             det_labels = mlvl_labels[keep_idxs][:cfg.max_per_img]
-            det_logits = mlvl_logits[keep_idxs][:cfg.max_per_img]
-            return det_bboxes, det_labels, det_logits
+            return det_bboxes, det_labels
         else:
-            return mlvl_bboxes, mlvl_scores, mlvl_labels, mlvl_logits
+            return mlvl_bboxes, mlvl_scores, mlvl_labels
 
     def filter_scores_and_topk(scores, score_thr, topk, results=None):
         """Filter results using score threshold and topk candidates.
@@ -832,7 +817,6 @@ class DisambiguateFocalHead(AnchorHead):
 
         if len(neg_inds) > 0:
             label_weights[neg_inds] = 1.0
-
         # map up to original set of anchors
         if unmap_outputs:
             num_total_anchors = flat_anchors.size(0)
