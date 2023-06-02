@@ -306,16 +306,19 @@ semi_wrapper = dict(
 custom_hooks = [
     dict(type="NumClassCheckHook"),
     dict(type="WeightSummary"),
-    dict(type="MeanTeacher", momentum=0.9995, interval=1, warm_up=0),
+    dict(type="MeanTeacher", momentum=0.9998, interval=1, warm_up=0),
 ]
 evaluation = dict(type="SubModulesDistEvalHook", evaluated_modules=['teacher'], interval=4000, start=10000)
-optimizer = dict(type="SGD", lr=0.001, momentum=0.9, weight_decay=0.0001)
+optimizer = dict(type="SGD", lr=0.00125, momentum=0.9, weight_decay=0.0001)
 optimizer_config = dict(
     _delete_=True, grad_clip=dict(max_norm=20, norm_type=2))
-lr_config = dict(step=[180000])
-runner = dict(_delete_=True, type="IterBasedRunner", max_iters=180000)
-checkpoint_config = dict(by_epoch=False, interval=4000, max_keep_ckpts=20)
+lr_config = dict(step=[180000*4],
+                 warmup_iters=500*4,)
+runner = dict(_delete_=True, type="IterBasedRunner", max_iters=180000*4)
+checkpoint_config = dict(by_epoch=False, interval=10000, max_keep_ckpts=20)
 
+# work_dir = "work_dirs/all_in_no_weight"
+work_dir = "work_dirs/${cfg_name}/180*4"
 log_config = dict(
     interval=50,
     hooks=[

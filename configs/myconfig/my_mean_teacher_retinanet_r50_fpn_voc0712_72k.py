@@ -27,8 +27,10 @@ model = dict(
         add_extra_convs='on_output',
         num_outs=5),
     bbox_head=dict(
-        type='DisambiguateFocalHead',
-        num_classes=80,
+        # type='ImprovedRetinaHead',
+        type='HighRecallHead',
+
+        num_classes=20,
         in_channels=256,
         stacked_convs=4,
         feat_channels=256,
@@ -78,7 +80,7 @@ train_pipeline = [
         transforms=[
             dict(
                 type="RandResize",
-                img_scale=[(1333, 400), (1333, 1200)],
+                img_scale=[(1000, 480), (1000, 800)],
                 multiscale_mode="range",
                 keep_ratio=True,
             ),
@@ -128,7 +130,7 @@ strong_pipeline = [
         transforms=[
             dict(
                 type="RandResize",
-                img_scale=[(1333, 400), (1333, 1200)],
+                img_scale=[(1000, 480), (1000, 800)],
                 multiscale_mode="range",
                 keep_ratio=True,
             ),
@@ -201,7 +203,7 @@ weak_pipeline = [
         transforms=[
             dict(
                 type="RandResize",
-                img_scale=[(1333, 400), (1333, 1200)],
+                img_scale=[(1000, 480), (1000, 800)],
                 multiscale_mode="range",
                 keep_ratio=True,
             ),
@@ -242,7 +244,7 @@ test_pipeline = [
     dict(type="LoadImageFromFile"),
     dict(
         type="MultiScaleFlipAug",
-        img_scale=(1333, 800),
+        img_scale=(1000, 600),
         flip=False,
         transforms=[
             dict(type="Resize", keep_ratio=True),
@@ -255,34 +257,47 @@ test_pipeline = [
     ),
 ]
 
-fold = 1
-percent = 10
+CLASSES = ('train', 'car', 'cat', 'chair', 'person', 'diningtable', 'sofa', 
+           'horse', 'bicycle', 'bird', 'cow', 'aeroplane', 'tvmonitor', 
+           'bottle', 'pottedplant', 'boat', 'sheep', 'bus', 'motorbike', 'dog')
 data = dict(
-    samples_per_gpu=2,
-    workers_per_gpu=2,
+    samples_per_gpu=5,
+    workers_per_gpu=5,
     train=dict(
         _delete_=True,
         type="SemiDataset",
         sup=dict(
             type="CocoDataset",
-            ann_file="data/coco/annotations/semi_supervised/instances_train2017.${fold}@${percent}.json",
-            img_prefix="data/coco/train2017/",
+            ann_file="data/VOCdevkit/VOC2007/instances_trainval.json",
+            img_prefix="data/VOCdevkit/VOC2007/JPEGImages",
             pipeline=train_pipeline,
+            classes=CLASSES,
         ),
         unsup=dict(
             type="CocoDataset",
-            ann_file="data/coco/annotations/semi_supervised/instances_train2017.${fold}@${percent}-unlabeled.json",
-            img_prefix="data/coco/train2017/",
+            ann_file="data/VOCdevkit/VOC2012/instances_trainval.json",
+            img_prefix="data/VOCdevkit/VOC2012/JPEGImages",
             pipeline=unsup_pipeline,
+            classes=CLASSES,
             filter_empty_gt=False,
         ),
     ),
-    val=dict(pipeline=test_pipeline),
-    test=dict(pipeline=test_pipeline),
+    val=dict(
+        type="CocoDataset",
+        pipeline=test_pipeline,
+        img_prefix="data/VOCdevkit/VOC2007/JPEGImages",
+        ann_file="data/VOCdevkit/VOC2007/instances_test.json",
+        classes=CLASSES),
+    test=dict(
+        type="CocoDataset",
+        pipeline=test_pipeline,
+        img_prefix="data/VOCdevkit/VOC2007/JPEGImages",
+        ann_file="data/VOCdevkit/VOC2007/instances_test.json",
+        classes=CLASSES),
     sampler=dict(
         train=dict(
             type="SemiBalanceSampler",
-            sample_ratio=[1, 1],
+            sample_ratio=[1, 4],
             by_prob=True,
             # at_least_one=True,
             epoch_length=7330,
@@ -291,40 +306,39 @@ data = dict(
 )
 
 semi_wrapper = dict(
-    type="DisambiguateFocalMeanTeacher",
+    # type="SingleStageMeanTeacher",
+    type="HighRecallMeanTeacher",
+
     model="${model}",
     train_cfg=dict(
         use_teacher_proposal=False,
         pseudo_label_initial_score_thr=0.5,
         cls_pseudo_threshold=0.5,
         min_pseduo_box_size=0,
-        unsup_weight=1.0,
-        # warmup_step=90000,
-        warmup_step=-1,
+        unsup_weight=2.0,
 
+        warmup_step=-1,
     ),
-    test_cfg=dict(inference_on="teacher",
-                #   model=dict(
-                #     bbox_head=dict(
-                #         type='TestDisambiguateFocalHead',))
-                ),
+    test_cfg=dict(inference_on="teacher"),
 )
+
 
 custom_hooks = [
     dict(type="NumClassCheckHook"),
     dict(type="WeightSummary"),
-    dict(type='SetIterInfoHook'),
     dict(type="MeanTeacher", momentum=0.9995, interval=1, warm_up=0),
 ]
-evaluation = dict(type="SubModulesDistEvalHook", evaluated_modules=['teacher'], interval=4000, start=10000)
-optimizer = dict(type="SGD", lr=0.001, momentum=0.9, weight_decay=0.0001)
+evaluation = dict(type="SubModulesDistEvalHook", evaluated_modules=['teacher'], interval=8000, start=20000)
+optimizer = dict(type="SGD", lr=0.01, momentum=0.9, weight_decay=0.0001)
 optimizer_config = dict(
     _delete_=True, grad_clip=dict(max_norm=20, norm_type=2))
-lr_config = dict(step=[180000])
-runner = dict(_delete_=True, type="IterBasedRunner", max_iters=180000)
+lr_config = dict(step=[72000*4, 72000*4])
+runner = dict(_delete_=True, type="IterBasedRunner", max_iters=72000*4)
 checkpoint_config = dict(by_epoch=False, interval=4000, max_keep_ckpts=20)
 
-work_dir = "work_dirs/${cfg_name}_warmup=-1"
+fold = 1
+percent = 10
+
 log_config = dict(
     interval=50,
     hooks=[
@@ -347,4 +361,4 @@ log_config = dict(
     ],
 )
 
-fp16 = dict(loss_scale=512.)
+fp16 = dict()

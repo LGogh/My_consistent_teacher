@@ -14,7 +14,7 @@ from mmcv.ops import batched_nms
 
 
 @HEADS.register_module()
-class DisambiguateFocalHead(AnchorHead):
+class HighRecallHeadV0(AnchorHead):
     """Mostly the same with ATSS except for the anchor assignment. 
 
     ATSS head structure is similar with FCOS, however ATSS use anchor boxes
@@ -43,7 +43,7 @@ class DisambiguateFocalHead(AnchorHead):
         self.stacked_convs = stacked_convs
         self.conv_cfg = conv_cfg
         self.norm_cfg = norm_cfg
-        super(DisambiguateFocalHead, self).__init__(
+        super(HighRecallHeadV0, self).__init__(
             num_classes,
             in_channels,
             reg_decoded_bbox=reg_decoded_bbox,
@@ -437,7 +437,7 @@ class DisambiguateFocalHead(AnchorHead):
         if with_nms:
             if mlvl_bboxes.numel() == 0:
                 det_bboxes = torch.cat([mlvl_bboxes, mlvl_scores[:, None]], -1)
-                return det_bboxes, mlvl_labels
+                return det_bboxes, mlvl_labels, mlvl_logits
 
             det_bboxes, keep_idxs = batched_nms(mlvl_bboxes, mlvl_scores,
                                                 mlvl_labels, cfg.nms)
@@ -825,11 +825,14 @@ class DisambiguateFocalHead(AnchorHead):
             if formal_stage:
                 if gt_logits is not None:
                     top2_score, _ = torch.topk(gt_logits[sampling_result.pos_assigned_gt_inds], 2, dim=-1)
-                    # label_weights[pos_inds] = top2_score[:, 0] - top2_score[:, 1]
-                    label_weights[pos_inds] = torch.exp(
-                        top2_score[:, 0] - top2_score[:, 1])
-                    # from ssod.utils import log_every_n
-                    # log_every_n({"top2_score": top2_score[:, 0] - top2_score[:, 1]})
+                    # label_weights[pos_inds] = torch.exp(
+                    #     top2_score[:, 0] - top2_score[:, 1])
+                    # with torch.no_grad():
+                    delta = top2_score[:, 0] - top2_score[:, 1]
+                    label_weights[pos_inds] = torch.pow(delta, 2) * 5
+                    from ssod.utils import log_every_n
+                    log_every_n({"delta_score": delta})
+                    log_every_n({"top1_score": top2_score[:, 0]})
 
         if len(neg_inds) > 0:
             label_weights[neg_inds] = 1.0

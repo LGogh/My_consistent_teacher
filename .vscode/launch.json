@@ -44,5 +44,73 @@
                 "--launcher","pytorch",
             ]
         },
+        {
+            "name": "test-train",
+            "type": "python",
+            "request": "launch",
+            // "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "cwd": "/home/zsc/lxf_workspace/ConsistentTeacher",
+            "python": "/home/zsc/anaconda3/envs/ConsistentTeacher/bin/python",
+            "program": "/home/zsc/anaconda3/envs/ConsistentTeacher/lib/python3.7/site-packages/torch/distributed/launch.py",
+            "env": {"CUDA_VISIBLE_DEVICES":"0"},
+            "args": [
+                "--nproc_per_node=1",
+                "--master_port=29504",
+                "tools/train.py",
+                // "configs/baseline/test.py",
+                // "configs/baseline/mean_teacher_focal_warmup=100k.py",
+                // "configs/myconfig/high_recall.py",
+                "configs/myconfig/test_v2.py",
+                "--launcher","pytorch",
+            ]
+        },
+
+        {
+            "name": "test-disambiguate-mean",
+            "type": "python",
+            "request": "launch",
+            // "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "cwd": "/home/zsc/lxf_workspace/ConsistentTeacher",
+            "python": "/home/zsc/anaconda3/envs/ConsistentTeacher/bin/python",
+            "program": "/home/zsc/anaconda3/envs/ConsistentTeacher/lib/python3.7/site-packages/torch/distributed/launch.py",
+            "env": {"CUDA_VISIBLE_DEVICES":"0,1"},
+            "args": [
+                "--nproc_per_node=2",
+                "--master_port=29504",
+                "tools/test.py",
+                "configs/baseline/mean_teacher_disambiguate_focal_180k_10p_2x8_fp16.py",
+                "work_dirs/mean_teacher_disambiguate_focal_180k_10p_2x8_fp16/iter_8000.pth",
+                "--launcher","pytorch",
+                "--eval","bbox",
+            ]
+        },
+
+        {
+            "name": "test-mean",
+            "type": "python",
+            "request": "launch",
+            // "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "cwd": "/home/zsc/lxf_workspace/ConsistentTeacher",
+            "python": "/home/zsc/anaconda3/envs/ConsistentTeacher/bin/python",
+            "program": "/home/zsc/anaconda3/envs/ConsistentTeacher/lib/python3.7/site-packages/torch/distributed/launch.py",
+            "env": {"CUDA_VISIBLE_DEVICES":"0,1"},
+            "args": [
+                "--nproc_per_node=2",
+                "--master_port=29504",
+                "tools/test.py",
+                "configs/baseline/mean_teacher_retinanet_r50_fpn_coco_180k_10p_2x8_fp16.py",
+                "work_dirs/mean_teacher_retinanet_r50_fpn_coco_180k_10p_2x8_fp16/iter_180000.pth",
+                "--launcher","pytorch",
+                "--eval","bbox",
+            ]
+        },
+
+
     ]
 }

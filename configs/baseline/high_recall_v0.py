@@ -27,7 +27,7 @@ model = dict(
         add_extra_convs='on_output',
         num_outs=5),
     bbox_head=dict(
-        type='DisambiguateFocalHead',
+        type='HighRecallHeadV0',
         num_classes=80,
         in_channels=256,
         stacked_convs=4,
@@ -291,7 +291,7 @@ data = dict(
 )
 
 semi_wrapper = dict(
-    type="DisambiguateFocalMeanTeacher",
+    type="HighRecallMeanTeacher",
     model="${model}",
     train_cfg=dict(
         use_teacher_proposal=False,
@@ -314,17 +314,18 @@ custom_hooks = [
     dict(type="NumClassCheckHook"),
     dict(type="WeightSummary"),
     dict(type='SetIterInfoHook'),
-    dict(type="MeanTeacher", momentum=0.9995, interval=1, warm_up=0),
+    dict(type="MeanTeacher", momentum=0.9998, interval=1, warm_up=0),
 ]
-evaluation = dict(type="SubModulesDistEvalHook", evaluated_modules=['teacher'], interval=4000, start=10000)
-optimizer = dict(type="SGD", lr=0.001, momentum=0.9, weight_decay=0.0001)
+evaluation = dict(type="SubModulesDistEvalHook", evaluated_modules=['teacher'], interval=4001, start=10000)
+optimizer = dict(type="SGD", lr=0.00125, momentum=0.9, weight_decay=0.0001)
 optimizer_config = dict(
     _delete_=True, grad_clip=dict(max_norm=20, norm_type=2))
-lr_config = dict(step=[180000])
-runner = dict(_delete_=True, type="IterBasedRunner", max_iters=180000)
-checkpoint_config = dict(by_epoch=False, interval=4000, max_keep_ckpts=20)
+lr_config = dict(step=[180000*4],
+                 warmup_iters=500*4,)
+runner = dict(_delete_=True, type="IterBasedRunner", max_iters=180000*4)
+checkpoint_config = dict(by_epoch=False, interval=10000, max_keep_ckpts=20)
 
-work_dir = "work_dirs/${cfg_name}_warmup=-1"
+work_dir = "work_dirs/high_recall/2x2x720k"
 log_config = dict(
     interval=50,
     hooks=[

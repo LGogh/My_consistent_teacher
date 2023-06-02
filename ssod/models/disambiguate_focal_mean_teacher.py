@@ -9,7 +9,7 @@ from ssod.utils import log_every_n, log_image_with_boxes
 from ssod.utils.structure_utils import dict_split, weighted_loss
 
 from .multi_stream_detector import MultiSteamDetector
-from .utils import Transform2D, filter_invalid, filter_invalid_with_logits,filter_invalid_without_logits
+from .utils import Transform2D, filter_invalid, filter_invalid_with_logits
 
 
 @DETECTORS.register_module()

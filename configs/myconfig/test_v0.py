@@ -27,7 +27,7 @@ model = dict(
         add_extra_convs='on_output',
         num_outs=5),
     bbox_head=dict(
-        type='DisambiguateFocalHead',
+        type='TestV0Head',
         num_classes=80,
         in_channels=256,
         stacked_convs=4,
@@ -58,6 +58,7 @@ model = dict(
             min_pos_iou=0,
             ignore_iof_thr=-1),
         allowed_border=-1,
+        # pos_weight=5, 
         pos_weight=-1,
         debug=False),
     test_cfg=dict(
@@ -291,7 +292,7 @@ data = dict(
 )
 
 semi_wrapper = dict(
-    type="DisambiguateFocalMeanTeacher",
+    type="TestV0Teacher",
     model="${model}",
     train_cfg=dict(
         use_teacher_proposal=False,
@@ -299,14 +300,14 @@ semi_wrapper = dict(
         cls_pseudo_threshold=0.5,
         min_pseduo_box_size=0,
         unsup_weight=1.0,
+        # unsup_weight=5.0,
         # warmup_step=90000,
-        warmup_step=-1,
+        warmup_step=250000,
+        # warmup_step=-1,
 
     ),
     test_cfg=dict(inference_on="teacher",
-                #   model=dict(
-                #     bbox_head=dict(
-                #         type='TestDisambiguateFocalHead',))
+
                 ),
 )
 
@@ -314,17 +315,19 @@ custom_hooks = [
     dict(type="NumClassCheckHook"),
     dict(type="WeightSummary"),
     dict(type='SetIterInfoHook'),
-    dict(type="MeanTeacher", momentum=0.9995, interval=1, warm_up=0),
+    dict(type="MeanTeacher", momentum=0.9998, interval=1, warm_up=0),
 ]
 evaluation = dict(type="SubModulesDistEvalHook", evaluated_modules=['teacher'], interval=4000, start=10000)
-optimizer = dict(type="SGD", lr=0.001, momentum=0.9, weight_decay=0.0001)
+optimizer = dict(type="SGD", lr=0.00125, momentum=0.9, weight_decay=0.0001)
 optimizer_config = dict(
     _delete_=True, grad_clip=dict(max_norm=20, norm_type=2))
-lr_config = dict(step=[180000])
-runner = dict(_delete_=True, type="IterBasedRunner", max_iters=180000)
-checkpoint_config = dict(by_epoch=False, interval=4000, max_keep_ckpts=20)
+lr_config = dict(step=[180000*4],
+                 warmup_iters=500*4,)
+runner = dict(_delete_=True, type="IterBasedRunner", max_iters=180000*4)
+checkpoint_config = dict(by_epoch=False, interval=10000, max_keep_ckpts=20)
 
-work_dir = "work_dirs/${cfg_name}_warmup=-1"
+
+work_dir = "work_dirs/${cfg_name}/cls+reg-uw1"
 log_config = dict(
     interval=50,
     hooks=[

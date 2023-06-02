@@ -1,0 +1,5 @@
+[default]
+entity = xunfalai02
+project = consistent-teacher
+base_url = https://api.wandb.ai
+

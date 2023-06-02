@@ -14,7 +14,7 @@ from mmcv.ops import batched_nms
 
 
 @HEADS.register_module()
-class DisambiguateFocalHead(AnchorHead):
+class TestV1Head(AnchorHead):
     """Mostly the same with ATSS except for the anchor assignment. 
 
     ATSS head structure is similar with FCOS, however ATSS use anchor boxes
@@ -43,7 +43,7 @@ class DisambiguateFocalHead(AnchorHead):
         self.stacked_convs = stacked_convs
         self.conv_cfg = conv_cfg
         self.norm_cfg = norm_cfg
-        super(DisambiguateFocalHead, self).__init__(
+        super(TestV1Head, self).__init__(
             num_classes,
             in_channels,
             reg_decoded_bbox=reg_decoded_bbox,
@@ -332,6 +332,9 @@ class DisambiguateFocalHead(AnchorHead):
                 # since mmdet v2.0
                 # BG cat_id: num_class
                 scores = cls_score.softmax(-1)[:, :-1]
+            
+            # get the soft label
+            logits = scores
 
             # After https://github.com/open-mmlab/mmdetection/pull/6268/,
             # this operation keeps fewer bboxes under the same `nms_pre`.
@@ -342,10 +345,8 @@ class DisambiguateFocalHead(AnchorHead):
                 scores, cfg.score_thr, nms_pre,
                 dict(bbox_pred=bbox_pred, priors=priors))
             scores, labels, keep_idxs, filtered_results = results
+            # nms_pre=1000
 
-            # get the soft label?
-            # sigmoid sum != 1
-            logits = cls_score.softmax(-1)
             logits = logits[keep_idxs]
 
             bbox_pred = filtered_results['bbox_pred']
@@ -437,7 +438,7 @@ class DisambiguateFocalHead(AnchorHead):
         if with_nms:
             if mlvl_bboxes.numel() == 0:
                 det_bboxes = torch.cat([mlvl_bboxes, mlvl_scores[:, None]], -1)
-                return det_bboxes, mlvl_labels
+                return det_bboxes, mlvl_labels, mlvl_logits
 
             det_bboxes, keep_idxs = batched_nms(mlvl_bboxes, mlvl_scores,
                                                 mlvl_labels, cfg.nms)
@@ -511,7 +512,8 @@ class DisambiguateFocalHead(AnchorHead):
 
 
     def loss_single(self, anchors, cls_score, bbox_pred, labels,
-                    label_weights, bbox_targets, num_total_samples):
+                    label_weights, bbox_targets, bbox_weights,
+                    num_total_samples):
         """Compute loss of a single scale level.
 
         Args:
@@ -540,7 +542,8 @@ class DisambiguateFocalHead(AnchorHead):
         bbox_pred = bbox_pred.permute(0, 2, 3, 1).reshape(-1, 4)
         bbox_targets = bbox_targets.reshape(-1, 4)
         labels = labels.reshape(-1)
-        label_weights = label_weights.reshape(-1)
+        label_weights = label_weights.reshape(-1) 
+        bbox_weights = bbox_weights.reshape(-1, 4)
 
         # classification loss
         loss_cls = self.loss_cls(
@@ -555,8 +558,10 @@ class DisambiguateFocalHead(AnchorHead):
             pos_bbox_targets = bbox_targets[pos_inds]
             pos_bbox_pred = bbox_pred[pos_inds]
             pos_anchors = anchors[pos_inds]
-            centerness_targets = self.centerness_target(
-                pos_anchors, pos_bbox_targets)
+            # centerness_targets = self.centerness_target(
+            #     pos_anchors, pos_bbox_targets)
+            weight = bbox_weights[pos_inds][:, 0]
+
             pos_decode_bbox_pred = self.bbox_coder.decode(
                 pos_anchors, pos_bbox_pred)
 
@@ -564,14 +569,17 @@ class DisambiguateFocalHead(AnchorHead):
             loss_bbox = self.loss_bbox(
                 pos_decode_bbox_pred,
                 pos_bbox_targets,
-                weight=centerness_targets,
+                # weight=centerness_targets,
+                weight=weight,
                 avg_factor=1.0)
 
         else:
             loss_bbox = bbox_pred.sum() * 0
-            centerness_targets = bbox_targets.new_tensor(0.)
+            # centerness_targets = bbox_targets.new_tensor(0.)
+            weight = bbox_targets.new_tensor(0.)
 
-        return loss_cls, loss_bbox, centerness_targets.sum()
+        return loss_cls, loss_bbox, weight.sum()
+        # return loss_cls, loss_bbox, centerness_targets.sum()
 
     @force_fp32(apply_to=('cls_scores', 'bbox_preds'))
     def loss(self,
@@ -645,6 +653,7 @@ class DisambiguateFocalHead(AnchorHead):
                 labels_list,
                 label_weights_list,
                 bbox_targets_list,
+                bbox_weights_list,  # bbox_weight
                 num_total_samples=num_total_samples)
 
         bbox_avg_factor = sum(bbox_avg_factor)
@@ -825,11 +834,13 @@ class DisambiguateFocalHead(AnchorHead):
             if formal_stage:
                 if gt_logits is not None:
                     top2_score, _ = torch.topk(gt_logits[sampling_result.pos_assigned_gt_inds], 2, dim=-1)
-                    # label_weights[pos_inds] = top2_score[:, 0] - top2_score[:, 1]
-                    label_weights[pos_inds] = torch.exp(
-                        top2_score[:, 0] - top2_score[:, 1])
-                    # from ssod.utils import log_every_n
-                    # log_every_n({"top2_score": top2_score[:, 0] - top2_score[:, 1]})
+                    delta = top2_score[:, 0] - top2_score[:, 1]
+                    weight = torch.pow(delta, 2)
+                    # MaxNorm
+                    weight = weight / torch.max(weight)
+                    label_weights[pos_inds] = weight
+                    bbox_weights[pos_inds, :] = torch.unsqueeze(weight, 1).repeat(1, 4)
+
 
         if len(neg_inds) > 0:
             label_weights[neg_inds] = 1.0

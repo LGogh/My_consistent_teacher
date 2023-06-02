@@ -10,10 +10,13 @@ from ssod.utils.structure_utils import dict_split, weighted_loss
 
 from .multi_stream_detector import MultiSteamDetector
 from .utils import Transform2D, filter_invalid
+from .utils import filter_invalid_with_score
 
+# dynamic thr for per img
+# thr = mean(scores) + var(scores)
 
 @DETECTORS.register_module()
-class SingleStageMeanTeacher(MultiSteamDetector):
+class TestV2Teacher(MultiSteamDetector):
     def __init__(self, model: dict, train_cfg=None, test_cfg=None):
         super().__init__(
             dict(teacher=build_detector(model), student=build_detector(model)),
@@ -40,6 +43,7 @@ class SingleStageMeanTeacher(MultiSteamDetector):
         #! it means that at least one sample for each group should be provided on each gpu.
         #! In some situation, we can only put one image per gpu, we have to return the sum of loss
         #! and log the loss with logger instead. Or it will try to sync tensors don't exist.
+
         if "sup" in data_groups:
             gt_bboxes = data_groups["sup"]["gt_bboxes"]
             log_every_n(
@@ -51,6 +55,7 @@ class SingleStageMeanTeacher(MultiSteamDetector):
                 sum([len(b) for b in gt_bboxes]) / len(gt_bboxes)).to(gt_bboxes[0])
             sup_loss = {"sup_" + k: v for k, v in sup_loss.items()}
             loss.update(**sup_loss)
+
         if "unsup_student" in data_groups:
             unsup_loss = weighted_loss(
                 self.foward_unsup_train(
@@ -127,6 +132,7 @@ class SingleStageMeanTeacher(MultiSteamDetector):
         )
         loss.update(bbox_loss)
         return loss
+    
 
     def bbox_loss(
         self,
@@ -138,13 +144,19 @@ class SingleStageMeanTeacher(MultiSteamDetector):
         student_info=None,
         **kwargs,
     ):
-        gt_bboxes, gt_labels, _ = multi_apply(
-            filter_invalid,
+        # dynamic thr = mean(scores)
+        scores = [bbox[:, 4] for bbox in pseudo_bboxes]
+
+        thrs = [torch.mean(score) + torch.var(score) for score in scores]
+
+        gt_bboxes, gt_labels, gt_scores, _ = multi_apply(
+            filter_invalid_with_score,
             [bbox[:, :4] for bbox in pseudo_bboxes],
             pseudo_labels,
             [bbox[:, 4] for bbox in pseudo_bboxes],
-            thr=self.train_cfg.cls_pseudo_threshold,
+            # thr=self.train_cfg.cls_pseudo_threshold,
             # thr=0,
+            thrs,
         )
         num_gts = [len(bbox) for bbox in gt_bboxes]
         log_every_n(
@@ -154,6 +166,7 @@ class SingleStageMeanTeacher(MultiSteamDetector):
         losses = self.student.bbox_head.loss(
             *loss_inputs, gt_bboxes_ignore=gt_bboxes_ignore
         )
+
         if len([n for n in num_gts if n > 0]) < len(num_gts) / 2.:
             # TODO: Design a better way to deal with images without pseudo bbox.
             losses = weighted_loss(
@@ -230,8 +243,8 @@ class SingleStageMeanTeacher(MultiSteamDetector):
                         proposal,
                         proposal_label,
                         proposal[:, -1],
-                        thr=thr,
-                        # thr=0,
+                        # thr=thr,
+                        thr=0,
                         min_size=self.train_cfg.min_pseduo_box_size,
                     )
                     for proposal, proposal_label in zip(

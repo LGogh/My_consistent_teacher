@@ -10,10 +10,13 @@ from ssod.utils.structure_utils import dict_split, weighted_loss
 
 from .multi_stream_detector import MultiSteamDetector
 from .utils import Transform2D, filter_invalid
+from .utils import filter_invalid_with_score
 
+# dynamic thr for per img
+# thr = mean(scores)
 
 @DETECTORS.register_module()
-class SingleStageMeanTeacher(MultiSteamDetector):
+class TestV3Teacher(MultiSteamDetector):
     def __init__(self, model: dict, train_cfg=None, test_cfg=None):
         super().__init__(
             dict(teacher=build_detector(model), student=build_detector(model)),
@@ -127,6 +130,10 @@ class SingleStageMeanTeacher(MultiSteamDetector):
         )
         loss.update(bbox_loss)
         return loss
+    
+    def get_thr(self, scores, **kwargs,):
+        thr = reduce_mean(scores).clamp(min=1e-5)
+        return thr
 
     def bbox_loss(
         self,
@@ -138,22 +145,31 @@ class SingleStageMeanTeacher(MultiSteamDetector):
         student_info=None,
         **kwargs,
     ):
-        gt_bboxes, gt_labels, _ = multi_apply(
-            filter_invalid,
+        # dynamic thr = mean(scores)
+
+        thr = multi_apply(
+            self.get_thr,
+            [bbox[:, 4] for bbox in pseudo_bboxes],
+        )
+
+        gt_bboxes, gt_labels, gt_scores, _ = multi_apply(
+            filter_invalid_with_score,
             [bbox[:, :4] for bbox in pseudo_bboxes],
             pseudo_labels,
             [bbox[:, 4] for bbox in pseudo_bboxes],
-            thr=self.train_cfg.cls_pseudo_threshold,
+            # thr=self.train_cfg.cls_pseudo_threshold,
             # thr=0,
+            thr=thr,
         )
         num_gts = [len(bbox) for bbox in gt_bboxes]
         log_every_n(
             {"bbox_gt_num": sum(num_gts) / len(gt_bboxes)}
         )
-        loss_inputs = bbox_out + [gt_bboxes, gt_labels, img_metas]
+        loss_inputs = bbox_out + [gt_bboxes, gt_labels, gt_scores, img_metas]
         losses = self.student.bbox_head.loss(
             *loss_inputs, gt_bboxes_ignore=gt_bboxes_ignore
         )
+
         if len([n for n in num_gts if n > 0]) < len(num_gts) / 2.:
             # TODO: Design a better way to deal with images without pseudo bbox.
             losses = weighted_loss(
@@ -230,8 +246,8 @@ class SingleStageMeanTeacher(MultiSteamDetector):
                         proposal,
                         proposal_label,
                         proposal[:, -1],
-                        thr=thr,
-                        # thr=0,
+                        # thr=thr,
+                        thr=0,
                         min_size=self.train_cfg.min_pseduo_box_size,
                     )
                     for proposal, proposal_label in zip(

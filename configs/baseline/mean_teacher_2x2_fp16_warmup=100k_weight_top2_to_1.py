@@ -299,8 +299,8 @@ semi_wrapper = dict(
         cls_pseudo_threshold=0.5,
         min_pseduo_box_size=0,
         unsup_weight=1.0,
-        # warmup_step=90000,
-        warmup_step=-1,
+        warmup_step=100000,
+        # warmup_step=-1,
 
     ),
     test_cfg=dict(inference_on="teacher",
@@ -324,7 +324,7 @@ lr_config = dict(step=[180000])
 runner = dict(_delete_=True, type="IterBasedRunner", max_iters=180000)
 checkpoint_config = dict(by_epoch=False, interval=4000, max_keep_ckpts=20)
 
-work_dir = "work_dirs/${cfg_name}_warmup=-1"
+work_dir = "work_dirs/${cfg_name}"
 log_config = dict(
     interval=50,
     hooks=[
