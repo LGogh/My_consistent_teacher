@@ -12,3 +12,8 @@ from .test_v0_teacher import TestV0Teacher
 from .test_v1_teacher import TestV1Teacher
 
 from .test_v2_teacher import TestV2Teacher
+
+from .test_v3_teacher import TestV3Teacher
+
+from .dynamic_aug_net import AugWeight
+from .test_v4_teacher import TestV4Teacher

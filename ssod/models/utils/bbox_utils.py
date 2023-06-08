@@ -254,6 +254,41 @@ def filter_invalid(bbox, label=None, score=None, mask=None, thr=0.0, min_size=0)
     return bbox, label, mask
 
 
+# score > thr one-hot
+# score < thr feature distill
+def filter_with_score(bbox, label=None, score=None, thr=0.0, mask=None, min_size=0):
+    fd_bbox = bbox
+    if score is not None:
+        valid = score > thr
+        invalid = score <= thr
+        
+        bbox = bbox[valid]
+        score = score[valid]
+        if label is not None:
+            label = label[valid]
+        if mask is not None:
+            mask = BitmapMasks(mask.masks[valid.cpu().numpy()], mask.height, mask.width)
+
+        fd_bbox = fd_bbox[invalid]
+        
+    if min_size is not None:
+        bw = bbox[:, 2] - bbox[:, 0]
+        bh = bbox[:, 3] - bbox[:, 1]
+        valid = (bw > min_size) & (bh > min_size)
+        bbox = bbox[valid]
+        score = score[valid]
+        if label is not None:
+            label = label[valid]
+        if mask is not None:
+            mask = BitmapMasks(mask.masks[valid.cpu().numpy()], mask.height, mask.width)
+
+        fd_bw = fd_bbox[:, 2] - fd_bbox[:, 0]
+        fd_bh = fd_bbox[:, 3] - fd_bbox[:, 1]
+        valid = (fd_bw > min_size) & (fd_bh > min_size)
+        fd_bbox = fd_bbox[valid]
+
+    return bbox, label, fd_bbox, mask
+
 def filter_invalid_with_score(bbox, label=None, score=None, thr=0.0, mask=None, min_size=0):
     if score is not None:
         valid = score > thr

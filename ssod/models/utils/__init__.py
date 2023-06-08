@@ -3,3 +3,5 @@ from .bbox_utils import filter_invalid_with_logits
 # from .bbox_utils import filter_invalid_without_logits
 
 from .bbox_utils import filter_invalid_with_score
+
+from .bbox_utils import filter_with_score

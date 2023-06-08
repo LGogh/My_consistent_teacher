@@ -27,7 +27,7 @@ model = dict(
         add_extra_convs='on_output',
         num_outs=5),
     bbox_head=dict(
-        type='TestV2Head',
+        type='TestV3Head',
         num_classes=80,
         in_channels=256,
         stacked_convs=4,
@@ -48,7 +48,10 @@ model = dict(
             gamma=2.0,
             alpha=0.25,
             loss_weight=1.0),
-        loss_bbox=dict(type='GIoULoss', loss_weight=2.0)),
+        loss_bbox=dict(type='GIoULoss', loss_weight=2.0),
+        loss_feat=dict(type='MSELoss',)
+        
+        ),
     # training and testing settings
     train_cfg=dict(
         assigner=dict(
@@ -259,8 +262,11 @@ test_pipeline = [
 fold = 1
 percent = 10
 data = dict(
-    samples_per_gpu=2,
-    workers_per_gpu=2,
+    # samples_per_gpu=2,
+    # workers_per_gpu=2,
+    samples_per_gpu=3,
+    workers_per_gpu=3,
+
     train=dict(
         _delete_=True,
         type="SemiDataset",
@@ -283,7 +289,8 @@ data = dict(
     sampler=dict(
         train=dict(
             type="SemiBalanceSampler",
-            sample_ratio=[1, 1],
+            # sample_ratio=[1, 1],
+            sample_ratio=[1, 2],
             by_prob=True,
             # at_least_one=True,
             epoch_length=7330,
@@ -291,10 +298,8 @@ data = dict(
     ),
 )
 
-max_iters = 180000*4
-
 semi_wrapper = dict(
-    type="TestV2Teacher",
+    type="TestV3Teacher",
     model="${model}",
     train_cfg=dict(
         use_teacher_proposal=False,
@@ -306,8 +311,6 @@ semi_wrapper = dict(
         # warmup_step=90000,
         # warmup_step=250000,
         # warmup_step=-1,
-        t1 = 180000,
-        t2 = 360000,
 
     ),
     test_cfg=dict(inference_on="teacher",),
@@ -316,20 +319,20 @@ semi_wrapper = dict(
 custom_hooks = [
     dict(type="NumClassCheckHook"),
     dict(type="WeightSummary"),
-    dict(type='SetIterInfoHook'),
+    # dict(type='SetIterInfoHook'),
     dict(type="MeanTeacher", momentum=0.9998, interval=1, warm_up=0),
 ]
 evaluation = dict(type="SubModulesDistEvalHook", evaluated_modules=['teacher'], interval=4000, start=10000)
 optimizer = dict(type="SGD", lr=0.00125, momentum=0.9, weight_decay=0.0001)
 optimizer_config = dict(
     _delete_=True, grad_clip=dict(max_norm=20, norm_type=2))
-lr_config = dict(step=["${max_iters}"],
+lr_config = dict(step=[180000*4],
                  warmup_iters=500*4,)
-runner = dict(_delete_=True, type="IterBasedRunner", max_iters="${max_iters}")
+runner = dict(_delete_=True, type="IterBasedRunner", max_iters=180000*4)
 checkpoint_config = dict(by_epoch=False, interval=10000, max_keep_ckpts=20)
 
 
-work_dir = "work_dirs/${cfg_name}/alpha_t"
+work_dir = "work_dirs/${cfg_name}/test"
 log_config = dict(
     interval=50,
     hooks=[

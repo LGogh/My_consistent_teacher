@@ -12,3 +12,7 @@ from .test_v0 import TestV0Head
 from .test_v1 import TestV1Head
 
 from .test_v2 import TestV2Head
+
+from .test_v3 import TestV3Head
+
+from .test_v4 import TestV4Head

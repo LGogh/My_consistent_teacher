@@ -10,7 +10,7 @@ from ssod.utils.structure_utils import dict_split, weighted_loss
 
 from .multi_stream_detector import MultiSteamDetector
 from .utils import Transform2D, filter_invalid
-from .utils import filter_invalid_with_score
+from .utils import filter_with_score
 
 # dynamic thr for per img
 # thr = mean(scores)
@@ -43,17 +43,19 @@ class TestV3Teacher(MultiSteamDetector):
         #! it means that at least one sample for each group should be provided on each gpu.
         #! In some situation, we can only put one image per gpu, we have to return the sum of loss
         #! and log the loss with logger instead. Or it will try to sync tensors don't exist.
-        if "sup" in data_groups:
-            gt_bboxes = data_groups["sup"]["gt_bboxes"]
-            log_every_n(
-                {"sup_gt_num": sum([len(bbox)
-                                   for bbox in gt_bboxes]) / len(gt_bboxes)}
-            )
-            sup_loss = self.student.forward_train(**data_groups["sup"])
-            sup_loss['num_gts'] = torch.tensor(
-                sum([len(b) for b in gt_bboxes]) / len(gt_bboxes)).to(gt_bboxes[0])
-            sup_loss = {"sup_" + k: v for k, v in sup_loss.items()}
-            loss.update(**sup_loss)
+
+        # if "sup" in data_groups:
+        #     gt_bboxes = data_groups["sup"]["gt_bboxes"]
+        #     log_every_n(
+        #         {"sup_gt_num": sum([len(bbox)
+        #                            for bbox in gt_bboxes]) / len(gt_bboxes)}
+        #     )
+        #     sup_loss = self.student.forward_train(**data_groups["sup"])
+        #     sup_loss['num_gts'] = torch.tensor(
+        #         sum([len(b) for b in gt_bboxes]) / len(gt_bboxes)).to(gt_bboxes[0])
+        #     sup_loss = {"sup_" + k: v for k, v in sup_loss.items()}
+        #     loss.update(**sup_loss)
+
         if "unsup_student" in data_groups:
             unsup_loss = weighted_loss(
                 self.foward_unsup_train(
@@ -121,51 +123,73 @@ class TestV3Teacher(MultiSteamDetector):
         )
         pseudo_labels = teacher_info["det_labels"]
         loss = {}
+
+        thrs = self.get_thrs(pseudo_bboxes=pseudo_bboxes)
+        gt_bboxes, gt_labels, fd_bboxes = self.bbox_filter(pseudo_bboxes, 
+                                                pseudo_labels,
+                                                thrs)
+
         bbox_loss, proposal_list = self.bbox_loss(
             student_info["bbox_out"],
-            pseudo_bboxes,
-            pseudo_labels,
+            gt_bboxes,
+            gt_labels,
             student_info["img_metas"],
             student_info=student_info,
         )
         loss.update(bbox_loss)
+
+        # feature distill loss
+        feat_loss = self.student.bbox_head.feat_loss(fd_bboxes,
+                                   teacher_info["backbone_feature"][0],
+                                   student_info["backbone_feature"][0])
+        loss.update(feat_loss)
+
         return loss
     
-    def get_thr(self, scores, **kwargs,):
-        thr = reduce_mean(scores).clamp(min=1e-5)
-        return thr
+    # get the dynmaic thr
+    def get_thrs(self, pseudo_bboxes):
+        # dynamic thr = mean(score)+var(score)
+        scores = [bbox[:, 4] for bbox in pseudo_bboxes]
+        thrs = [torch.mean(score) + torch.var(score) for score in scores]
+
+        log_every_n(
+            {"thr": sum(thrs) / len(thrs)}
+        )
+
+        return thrs
+
+    # filter the bboxes for one-hot or feature distill
+    def bbox_filter(self, 
+        pseudo_bboxes,
+        pseudo_labels,
+        thrs,
+    ):
+        gt_bboxes, gt_labels, fd_bboxes, _ = multi_apply(
+            filter_with_score,
+            [bbox[:, :4] for bbox in pseudo_bboxes],
+            pseudo_labels,
+            [bbox[:, 4] for bbox in pseudo_bboxes],
+            thrs,
+        )
+
+        return gt_bboxes, gt_labels, fd_bboxes
 
     def bbox_loss(
         self,
         bbox_out,
-        pseudo_bboxes,
-        pseudo_labels,
+        gt_bboxes,
+        gt_labels,
         img_metas,
         gt_bboxes_ignore=None,
         student_info=None,
         **kwargs,
     ):
-        # dynamic thr = mean(scores)
-
-        thr = multi_apply(
-            self.get_thr,
-            [bbox[:, 4] for bbox in pseudo_bboxes],
-        )
-
-        gt_bboxes, gt_labels, gt_scores, _ = multi_apply(
-            filter_invalid_with_score,
-            [bbox[:, :4] for bbox in pseudo_bboxes],
-            pseudo_labels,
-            [bbox[:, 4] for bbox in pseudo_bboxes],
-            # thr=self.train_cfg.cls_pseudo_threshold,
-            # thr=0,
-            thr=thr,
-        )
         num_gts = [len(bbox) for bbox in gt_bboxes]
         log_every_n(
             {"bbox_gt_num": sum(num_gts) / len(gt_bboxes)}
         )
-        loss_inputs = bbox_out + [gt_bboxes, gt_labels, gt_scores, img_metas]
+        
+        loss_inputs = bbox_out + [gt_bboxes, gt_labels, img_metas]
         losses = self.student.bbox_head.loss(
             *loss_inputs, gt_bboxes_ignore=gt_bboxes_ignore
         )

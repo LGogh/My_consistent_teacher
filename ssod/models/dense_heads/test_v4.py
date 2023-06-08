@@ -12,7 +12,7 @@ from numpy import isin
 
 
 @HEADS.register_module()
-class TestV3Head(AnchorHead):
+class TestV4Head(AnchorHead):
     """Mostly the same with ATSS except for the anchor assignment. 
 
     ATSS head structure is similar with FCOS, however ATSS use anchor boxes
@@ -37,12 +37,11 @@ class TestV3Head(AnchorHead):
                          name='atss_cls',
                          std=0.01,
                          bias_prob=0.01)),
-                 loss_feat=dict(type='MSELoss',),
                  **kwargs):
         self.stacked_convs = stacked_convs
         self.conv_cfg = conv_cfg
         self.norm_cfg = norm_cfg
-        super(TestV3Head, self).__init__(
+        super(TestV4Head, self).__init__(
             num_classes,
             in_channels,
             reg_decoded_bbox=reg_decoded_bbox,
@@ -55,10 +54,6 @@ class TestV3Head(AnchorHead):
             # SSD sampling=False so use PseudoSampler
             sampler_cfg = dict(type='PseudoSampler')
             self.sampler = build_sampler(sampler_cfg, context=self)
-
-        # self.strides = [8, 16, 32, 64, 128]
-        self.strides = 8
-        self.loss_feat = build_loss(loss_feat)
 
     def _init_layers(self):
         """Initialize layers of the head."""
@@ -138,88 +133,10 @@ class TestV3Head(AnchorHead):
         # we just follow atss, not apply exp in bbox_pred
         bbox_pred = scale(self.atss_reg(reg_feat)).float()
         return cls_score, bbox_pred
-    
-    # feature distill loss
-    def feat_loss(self,
-                  fd_bboxes,
-                  teacher_feat,
-                  student_feat,
-    ): 
-        """ compute the feature distill loss.
-        Args:
-            fd_bboxes (list): the score of fd_boxes lower than thr.
-            teacher_feat (tensor):5 level, each level is tensor of [b, 256, w, h]
-            student_feat (tensor):
-        """
-        teacher_feat_list = teacher_feat.tolist()
-        student_feat_list = student_feat.tolist()
-        
-        feat_losses = multi_apply(
-            self.feat_loss_single,
-            fd_bboxes,
-            teacher_feat_list,
-            student_feat_list,
-        )
-        return feat_losses
-
-    # for one image
-    def feat_loss_single(self, fd_bbox, teacher_feat, student_feat):
-        # map to the feature map
-        x_min_fmap = fd_bbox[:, 0] // self.strides
-        y_min_fmap = fd_bbox[:, 1] // self.strides
-        x_max_fmap = fd_bbox[:, 2] // self.strides
-        y_max_fmap = fd_bbox[:, 3] // self.strides
-
-        bbox_map = torch.stack([x_min_fmap, y_min_fmap, x_max_fmap, y_max_fmap], dim=-1)
-
-        extract_teacher_feat = self.extract_feat(bbox_map, teacher_feat)
-        extract_student_feat = self.extract_feat(bbox_map, student_feat)
-
-        assert len(extract_student_feat) == len(extract_teacher_feat)
-        feat_len = len(extract_teacher_feat)
-
-        device = extract_teacher_feat.device
-        feat_loss_list = []
-        for _ in feat_len:
-            # feat_loss = self.loss_feat(extract_student_feat[_], extract_teacher_feat[_])
-            feat_loss_list.append(self.loss_feat(extract_student_feat[_], extract_teacher_feat[_]))
-
-        # trans the list to tensor
-        # calculate the mean of feat loss, sum / len
-        # ! some value may NAN
-        feat_loss = torch.Tensor(feat_loss_list)
-        feat_loss = torch.where(torch.isnan(feat_loss), torch.full_like(feat_loss, 0), feat_loss)
-        feat_loss = torch.Tensor([sum(feat_loss) / feat_len]).to(device=device)
-        feat_loss.requires_grad = True
-
-        # the return value shuold be tensor, torch.size ([1])
-        return feat_loss
-    
-    def extract_feat(self, bbox_fmap, feats):
-        # Calculate the width and height mapped to the feature map 
-        # to determine whether it is empty
-        bbox_w = bbox_fmap[:, 2] - bbox_fmap[:, 0]
-        bbox_h = bbox_fmap[:, 3] - bbox_fmap[:, 1]
-        vaild = (bbox_w > 0) & (bbox_h > 0)
-        bbox_fmap = bbox_fmap[vaild]
-
-        x_min_fmap = bbox_fmap[:, 0].int()
-        y_min_fmap = bbox_fmap[:, 1].int()
-        x_max_fmap = bbox_fmap[:, 2].int()
-        y_max_fmap = bbox_fmap[:, 3].int()
-
-        extract_feat = []
-        bbox_len = len(bbox_fmap)
-        for i in range(bbox_len):
-            extract_feat.append(feats[:, :, x_min_fmap[i]:x_max_fmap[i], y_min_fmap[i]:y_max_fmap[i]])
-        
-        # the region size of diff bbox not same
-        # return a list of feature region
-        return extract_feat
-
 
     def loss_single(self, anchors, cls_score, bbox_pred, labels,
-                    label_weights, bbox_targets, num_total_samples):
+                    label_weights, bbox_targets, bbox_weights,
+                    num_total_samples):
         """Compute loss of a single scale level.
 
         Args:
@@ -249,6 +166,7 @@ class TestV3Head(AnchorHead):
         bbox_targets = bbox_targets.reshape(-1, 4)
         labels = labels.reshape(-1)
         label_weights = label_weights.reshape(-1)
+        bbox_weights = bbox_weights.reshape(-1, 4)
 
         # classification loss
         loss_cls = self.loss_cls(
@@ -263,8 +181,10 @@ class TestV3Head(AnchorHead):
             pos_bbox_targets = bbox_targets[pos_inds]
             pos_bbox_pred = bbox_pred[pos_inds]
             pos_anchors = anchors[pos_inds]
-            centerness_targets = self.centerness_target(
-                pos_anchors, pos_bbox_targets)
+            # centerness_targets = self.centerness_target(
+            #     pos_anchors, pos_bbox_targets)
+            weight = bbox_weights[pos_inds][:, 0]
+
             pos_decode_bbox_pred = self.bbox_coder.decode(
                 pos_anchors, pos_bbox_pred)
 
@@ -272,14 +192,17 @@ class TestV3Head(AnchorHead):
             loss_bbox = self.loss_bbox(
                 pos_decode_bbox_pred,
                 pos_bbox_targets,
-                weight=centerness_targets,
+                # weight=centerness_targets,
+                weight=weight,
                 avg_factor=1.0)
 
         else:
             loss_bbox = bbox_pred.sum() * 0
-            centerness_targets = bbox_targets.new_tensor(0.)
+            # centerness_targets = bbox_targets.new_tensor(0.)
+            weight = bbox_targets.new_tensor(0.)
 
-        return loss_cls, loss_bbox, centerness_targets.sum()
+        return loss_cls, loss_bbox, weight.sum()
+        # return loss_cls, loss_bbox, centerness_targets.sum())
 
     @force_fp32(apply_to=('cls_scores', 'bbox_preds'))
     def loss(self,
@@ -288,7 +211,8 @@ class TestV3Head(AnchorHead):
              gt_bboxes,
              gt_labels,
              img_metas,
-             gt_bboxes_ignore=None):
+             gt_bboxes_ignore=None,
+             trans_weight=None):
         """Compute losses of the head.
 
         Args:
@@ -322,7 +246,9 @@ class TestV3Head(AnchorHead):
             img_metas,
             gt_bboxes_ignore_list=gt_bboxes_ignore,
             gt_labels_list=gt_labels,
-            label_channels=label_channels)
+            trans_weight=trans_weight,
+            label_channels=label_channels,
+            )
         if cls_reg_targets is None:
             return None
 
@@ -343,6 +269,7 @@ class TestV3Head(AnchorHead):
                 labels_list,
                 label_weights_list,
                 bbox_targets_list,
+                bbox_weights_list,
                 num_total_samples=num_total_samples)
 
         bbox_avg_factor = sum(bbox_avg_factor)
@@ -352,8 +279,8 @@ class TestV3Head(AnchorHead):
             loss_cls=losses_cls,
             loss_bbox=losses_bbox)
 
-    def centerness_target(self, anchors, gts):
-        return anchors.new_ones(anchors.shape[:-1])
+    # def centerness_target(self, anchors, gts):
+    #     return anchors.new_ones(anchors.shape[:-1])
 
     def get_targets(self,
                     anchor_list,
@@ -362,6 +289,7 @@ class TestV3Head(AnchorHead):
                     img_metas,
                     gt_bboxes_ignore_list=None,
                     gt_labels_list=None,
+                    trans_weight=None,
                     label_channels=1,
                     unmap_outputs=True):
         """Get targets for ATSS head.
@@ -388,6 +316,10 @@ class TestV3Head(AnchorHead):
             gt_bboxes_ignore_list = [None for _ in range(num_imgs)]
         if gt_labels_list is None:
             gt_labels_list = [None for _ in range(num_imgs)]
+
+        if trans_weight is None:
+            trans_weight = [None for _ in range(num_imgs)]
+
         (all_anchors, all_labels, all_label_weights, all_bbox_targets,
          all_bbox_weights, pos_inds_list, neg_inds_list) = multi_apply(
              self._get_target_single,
@@ -397,6 +329,7 @@ class TestV3Head(AnchorHead):
              gt_bboxes_list,
              gt_bboxes_ignore_list,
              gt_labels_list,
+             trans_weight,
              img_metas,
              label_channels=label_channels,
              unmap_outputs=unmap_outputs)
@@ -426,6 +359,7 @@ class TestV3Head(AnchorHead):
                            gt_bboxes,
                            gt_bboxes_ignore,
                            gt_labels,
+                           trans_weight,
                            img_meta,
                            label_channels=1,
                            unmap_outputs=True):
@@ -501,6 +435,10 @@ class TestV3Head(AnchorHead):
 
             bbox_targets[pos_inds, :] = pos_bbox_targets
             bbox_weights[pos_inds, :] = 1.0
+
+            if trans_weight is not None:
+                bbox_weights[pos_inds, :] += trans_weight
+
             if gt_labels is None:
                 # Only rpn gives gt_labels as None
                 # Foreground is the first class since v2.5.0
@@ -512,6 +450,10 @@ class TestV3Head(AnchorHead):
                 label_weights[pos_inds] = 1.0
             else:
                 label_weights[pos_inds] = self.train_cfg.pos_weight
+
+            if trans_weight is not None:
+                label_weights[pos_inds] += trans_weight
+
         if len(neg_inds) > 0:
             label_weights[neg_inds] = 1.0
 

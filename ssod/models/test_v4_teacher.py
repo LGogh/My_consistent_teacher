@@ -12,11 +12,15 @@ from .multi_stream_detector import MultiSteamDetector
 from .utils import Transform2D, filter_invalid
 from .utils import filter_invalid_with_score
 
-# dynamic thr for per img
-# thr = mean(scores) + var(scores)
+# from .dynamic_aug_net import AugWeight
+
+import torch
+import torch.nn as nn
+
+# dynamic aug
 
 @DETECTORS.register_module()
-class TestV2Teacher(MultiSteamDetector):
+class TestV4Teacher(MultiSteamDetector):
     def __init__(self, model: dict, train_cfg=None, test_cfg=None):
         super().__init__(
             dict(teacher=build_detector(model), student=build_detector(model)),
@@ -26,25 +30,22 @@ class TestV2Teacher(MultiSteamDetector):
         if train_cfg is not None:
             self.freeze("teacher")
             self.unsup_weight = self.train_cfg.unsup_weight
-
-            self.t1 = self.train_cfg.t1
-            self.t2 = self.train_cfg.t2
-
         self.writer = None
-        self.iter = 0
 
-    def set_iter(self, step):
-        self.iter = step
-    
-    def get_alpha_t(self, ):
-        alpha_t = 0.
-        if self.iter < self.t1:
-            alpha_t = 0.
-        elif self.iter >= self.t1 and self.iter < self.t2:
-            alpha_t = (self.iter - self.t1) / (self.t2 - self.t1)
-        elif self.iter >= self.t2:
-            alpha_t = 2
-        return alpha_t
+        # self.aug_weight = AugWeight(transforms_len=9)
+
+        self.transforms_len = 9
+        self.pool_size = 9
+        # conv
+        self.conv1 = nn.Conv2d(in_channels=3, out_channels=64, kernel_size=3, stride=2)
+        self.conv2 = nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=2)
+        # AdaptiveAvgPool2d() 会得到 inf 
+        self.pooling = nn.AdaptiveMaxPool2d(self.pool_size)
+        self.fc1 = nn.Linear(self.pool_size * self.pool_size * 3, 64)
+        self.fc_trans = nn.Linear(64, self.transforms_len)
+        self.sigmoid = nn.Sigmoid()
+        # self.softmax = nn.Softmax(dim=1)
+        self.relu = nn.ReLU()
 
     def forward_train(self, img, img_metas, **kwargs):
         super().forward_train(img, img_metas, **kwargs)
@@ -77,7 +78,7 @@ class TestV2Teacher(MultiSteamDetector):
         if "unsup_student" in data_groups:
             unsup_loss = weighted_loss(
                 self.foward_unsup_train(
-                    data_groups["unsup_teacher"], data_groups["unsup_student"]
+                    data_groups["unsup_teacher"], data_groups["unsup_student"],
                 ),
                 weight=self.unsup_weight,
             )
@@ -113,6 +114,61 @@ class TestV2Teacher(MultiSteamDetector):
                     loss[key] = loss[key] * num_unsup / avg_num_unsup
         return loss
 
+    def get_aug_weight(self, student_data):
+            # img tensor (, 3, w, h)
+            # (b, 9)
+            # trans_weights = self.aug_weight(student_data.get("img"))
+            trans_weights = self.forward_aug_weight(student_data.get("img"))
+            transforms = [
+                            "Identity",
+                            "AutoContrast",
+                            "RandEqualize",
+                            "RandSolarize",
+                            "RandColor",
+                            "RandContrast",
+                            "RandBrightness",
+                            "RandSharpness",
+                            "RandPosterize",
+            ]
+            
+            num_imgs = len(student_data["img_metas"])
+            # (b)
+            trans_weight = []
+
+            for _ in range(num_imgs):
+                # aug: resize, flip, Shuffled(oneof, oneof)
+                aug_type_1 = student_data["img_metas"][_]["aug_info"][2]["type"]
+                
+                if aug_type_1 in transforms:
+                    # get the index of trans
+                    trans_idx = transforms.index(aug_type_1)
+                # get the weight of trans
+                trans_weight.append(trans_weights[_][trans_idx])
+            return trans_weight
+
+    def forward_aug_weight(self, img):
+        if torch.isnan(img).any() or torch.isinf(img).any():
+            img = torch.where(torch.isnan(img), torch.full_like(img, 0), img)
+            img = torch.where(torch.isinf(img), torch.full_like(img, 1), img)
+
+        feat = self.conv1(img)
+        feat = self.conv2(feat)
+        # feat = self.norm(feat)
+        feat = self.relu(feat)
+        # (b, c, h, w) -> (b, c, 9, 9)
+        feat = self.pooling(img)
+        # (b, c*9*9)
+        feat = feat.flatten(start_dim=1)
+        # (b, 64)
+        feat = self.fc1(feat)
+        feat = self.relu(feat)
+        # (b, 9)
+        feat_trans = self.fc_trans(feat)
+        # (b, 9)
+        trans_prob = self.sigmoid(feat_trans)
+
+        return trans_prob
+
     def foward_unsup_train(self, teacher_data, student_data):
         # sort the teacher output according to the order of student input to avoid some bugs
         tnames = [meta["filename"] for meta in teacher_data["img_metas"]]
@@ -127,9 +183,17 @@ class TestV2Teacher(MultiSteamDetector):
             )
         student_info = self.extract_student_info(**student_data)
 
-        return self.compute_pseudo_label_loss(student_info, teacher_info)
+        trans_weight = self.get_aug_weight(student_data)
 
-    def compute_pseudo_label_loss(self, student_info, teacher_info):
+        # for name, param in self.named_parameters():
+        #     if param.grad is not None:
+        #         print("not None " + name)
+        #     if param.grad is None:
+        #         print("None " + name)
+
+        return self.compute_pseudo_label_loss(student_info, teacher_info, trans_weight)
+
+    def compute_pseudo_label_loss(self, student_info, teacher_info, trans_weight):
         M = self._get_trans_mat(
             teacher_info["transform_matrix"], student_info["transform_matrix"]
         )
@@ -141,92 +205,50 @@ class TestV2Teacher(MultiSteamDetector):
         )
         pseudo_labels = teacher_info["det_labels"]
         loss = {}
-
-
-        alpha_t = self.get_alpha_t()
-        thrs = self.get_thrs(pseudo_bboxes=pseudo_bboxes, alpha_t=alpha_t)
-        gt_bboxes, gt_labels = self.bbox_filter(pseudo_bboxes, 
-                                                pseudo_labels,
-                                                thrs)
-
         bbox_loss, proposal_list = self.bbox_loss(
             student_info["bbox_out"],
-            # pseudo_bboxes,
-            # pseudo_labels,
-            gt_bboxes,
-            gt_labels,
+            pseudo_bboxes,
+            pseudo_labels,
             student_info["img_metas"],
             student_info=student_info,
+            trans_weight=trans_weight,
         )
         loss.update(bbox_loss)
         return loss
     
-     # get the dynmaic thr
-    def get_thrs(self, pseudo_bboxes, alpha_t=0.):
-        # dynamic thr = mean(score)+var(score)
-        scores = [bbox[:, 4] for bbox in pseudo_bboxes]
-        thrs = [torch.mean(score) + alpha_t * torch.var(score) for score in scores]
-
-        log_every_n(
-            {"thr": sum(thrs) / len(thrs)}
-        )
-
-        return thrs
-    
-    # filter the bboxes with the dynamic thr
-    def bbox_filter(self, 
-        pseudo_bboxes,
-        pseudo_labels,
-        thrs,
-    ):
-        gt_bboxes, gt_labels, _, _ = multi_apply(
-            filter_invalid_with_score,
-            [bbox[:, :4] for bbox in pseudo_bboxes],
-            pseudo_labels,
-            [bbox[:, 4] for bbox in pseudo_bboxes],
-            thrs,
-        )
-
-        return gt_bboxes, gt_labels
-
 
     def bbox_loss(
         self,
         bbox_out,
-        # pseudo_bboxes,
-        # pseudo_labels,
-        gt_bboxes,
-        gt_labels,
+        pseudo_bboxes,
+        pseudo_labels,
         img_metas,
         gt_bboxes_ignore=None,
         student_info=None,
+        trans_weight=None,
         **kwargs,
     ):
-        
-
-        # # dynamic thr = mean(scores)
+        # dynamic thr = mean(scores)
         # scores = [bbox[:, 4] for bbox in pseudo_bboxes]
-
         # thrs = [torch.mean(score) + torch.var(score) for score in scores]
 
-        # gt_bboxes, gt_labels, gt_scores, _ = multi_apply(
-        #     filter_invalid_with_score,
-        #     [bbox[:, :4] for bbox in pseudo_bboxes],
-        #     pseudo_labels,
-        #     [bbox[:, 4] for bbox in pseudo_bboxes],
-        #     # thr=self.train_cfg.cls_pseudo_threshold,
-        #     # thr=0,
-        #     thrs,
-        # )
-
-
+        gt_bboxes, gt_labels, gt_scores, _ = multi_apply(
+            filter_invalid_with_score,
+            [bbox[:, :4] for bbox in pseudo_bboxes],
+            pseudo_labels,
+            [bbox[:, 4] for bbox in pseudo_bboxes],
+            thr=self.train_cfg.cls_pseudo_threshold,
+            # thr=0,
+            # thrs,
+        )
         num_gts = [len(bbox) for bbox in gt_bboxes]
         log_every_n(
             {"bbox_gt_num": sum(num_gts) / len(gt_bboxes)}
         )
         loss_inputs = bbox_out + [gt_bboxes, gt_labels, img_metas]
         losses = self.student.bbox_head.loss(
-            *loss_inputs, gt_bboxes_ignore=gt_bboxes_ignore
+            *loss_inputs, gt_bboxes_ignore=gt_bboxes_ignore,
+            trans_weight=trans_weight,
         )
 
         if len([n for n in num_gts if n > 0]) < len(num_gts) / 2.:
@@ -305,8 +327,8 @@ class TestV2Teacher(MultiSteamDetector):
                         proposal,
                         proposal_label,
                         proposal[:, -1],
-                        # thr=thr,
-                        thr=0,
+                        thr=thr,
+                        # thr=0,
                         min_size=self.train_cfg.min_pseduo_box_size,
                     )
                     for proposal, proposal_label in zip(

@@ -62,7 +62,7 @@
                 // "configs/baseline/test.py",
                 // "configs/baseline/mean_teacher_focal_warmup=100k.py",
                 // "configs/myconfig/high_recall.py",
-                "configs/myconfig/test_v2.py",
+                "configs/myconfig/test_v3.py",
                 "--launcher","pytorch",
             ]
         },
