@@ -148,22 +148,29 @@ class TestV3Head(AnchorHead):
         """ compute the feature distill loss.
         Args:
             fd_bboxes (list): the score of fd_boxes lower than thr.
-            teacher_feat (tensor):5 level, each level is tensor of [b, 256, w, h]
+            teacher_feat (tensor):1 level, each level is tensor of [b, 256, w, h]
             student_feat (tensor):
         """
-        teacher_feat_list = teacher_feat.tolist()
-        student_feat_list = student_feat.tolist()
+        # teacher_feat_list = teacher_feat.tolist()
+        # student_feat_list = student_feat.tolist()
         
         feat_losses = multi_apply(
             self.feat_loss_single,
             fd_bboxes,
-            teacher_feat_list,
-            student_feat_list,
+            # teacher_feat_list,
+            # student_feat_list,
+            teacher_feat,
+            student_feat,
         )
-        return feat_losses
+
+        # should return a dict
+        return dict(
+            loss_feat =feat_losses[0])
 
     # for one image
     def feat_loss_single(self, fd_bbox, teacher_feat, student_feat):
+        # teacher_feat [256, w, h],
+
         # map to the feature map
         x_min_fmap = fd_bbox[:, 0] // self.strides
         y_min_fmap = fd_bbox[:, 1] // self.strides
@@ -171,16 +178,17 @@ class TestV3Head(AnchorHead):
         y_max_fmap = fd_bbox[:, 3] // self.strides
 
         bbox_map = torch.stack([x_min_fmap, y_min_fmap, x_max_fmap, y_max_fmap], dim=-1)
-
+        
+        # extract_teacher_feat -> list [n, [256, rw, wh]]
         extract_teacher_feat = self.extract_feat(bbox_map, teacher_feat)
         extract_student_feat = self.extract_feat(bbox_map, student_feat)
 
         assert len(extract_student_feat) == len(extract_teacher_feat)
         feat_len = len(extract_teacher_feat)
 
-        device = extract_teacher_feat.device
+        device = fd_bbox.device
         feat_loss_list = []
-        for _ in feat_len:
+        for _ in range(feat_len):
             # feat_loss = self.loss_feat(extract_student_feat[_], extract_teacher_feat[_])
             feat_loss_list.append(self.loss_feat(extract_student_feat[_], extract_teacher_feat[_]))
 
@@ -193,6 +201,7 @@ class TestV3Head(AnchorHead):
         feat_loss.requires_grad = True
 
         # the return value shuold be tensor, torch.size ([1])
+        
         return feat_loss
     
     def extract_feat(self, bbox_fmap, feats):
@@ -211,7 +220,7 @@ class TestV3Head(AnchorHead):
         extract_feat = []
         bbox_len = len(bbox_fmap)
         for i in range(bbox_len):
-            extract_feat.append(feats[:, :, x_min_fmap[i]:x_max_fmap[i], y_min_fmap[i]:y_max_fmap[i]])
+            extract_feat.append(feats[ :, x_min_fmap[i]:x_max_fmap[i], y_min_fmap[i]:y_max_fmap[i]])
         
         # the region size of diff bbox not same
         # return a list of feature region
