@@ -140,8 +140,8 @@ class TestV3Teacher(MultiSteamDetector):
 
         # feature distill loss
         feat_loss = self.student.bbox_head.feat_loss(fd_bboxes,
-                                   teacher_info["backbone_feature"][0],
-                                   student_info["backbone_feature"][0])
+                                   teacher_info["backbone_feature"],
+                                   student_info["backbone_feature"])
         loss.update(feat_loss)
 
         return loss

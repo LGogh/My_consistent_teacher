@@ -56,8 +56,8 @@ class TestV3Head(AnchorHead):
             sampler_cfg = dict(type='PseudoSampler')
             self.sampler = build_sampler(sampler_cfg, context=self)
 
-        # self.strides = [8, 16, 32, 64, 128]
-        self.strides = 8
+        self.strides = [8, 16, 32, 64, 128]
+        # self.strides = 8
         self.loss_feat = build_loss(loss_feat)
 
     def _init_layers(self):
@@ -150,32 +150,93 @@ class TestV3Head(AnchorHead):
             fd_bboxes (list): the score of fd_boxes lower than thr.
             teacher_feat (tensor):1 level, each level is tensor of [b, 256, w, h]
             student_feat (tensor):
+
+            5 level:
+            fd_bboxes (list): [b, [n1, 4], [n2, 4], ..., [nb, 4]]
+            teacher_feat (tuple):5 level, each level is tensor of (5, [b, 256, w, h])
+            student_feat (tuple):
         """
+        # 
         # teacher_feat_list = teacher_feat.tolist()
         # student_feat_list = student_feat.tolist()
+        # teacher_feat_list = list(teacher_feat)
+        # student_feat_list = list(student_feat)
         
+        # feat_losses = multi_apply(
+        #     self.feat_loss_single,
+        #     fd_bboxes,
+        #     teacher_feat_list,
+        #     student_feat_list,
+        #     # teacher_feat,
+        #     # student_feat,
+        #     self.strides,
+        # )
+
         feat_losses = multi_apply(
-            self.feat_loss_single,
-            fd_bboxes,
+            self.mvl_loss,
             # teacher_feat_list,
             # student_feat_list,
             teacher_feat,
             student_feat,
+            self.strides,
+            fd_bboxes=fd_bboxes,
         )
 
-        # should return a dict
+        # feat_losses = sum(feat_losses)
+        # feat_losses = []
+        # should return a dict         
         return dict(
-            loss_feat =feat_losses[0])
+            loss_feat = feat_losses[0])
+    
+
+    def mvl_loss(self, 
+            level_feat_teacher, 
+            level_feat_student, 
+            stride,
+            fd_bboxes=None):
+        """ calculate for one fpn layer
+        Args:
+            level_feat_teacher: [b, 256, w, h]
+            level_feat_student: [b, 256, w, h]
+            fd_bboxes: [b, n, 4]
+            stride:scalar
+
+        """
+        assert len(level_feat_teacher) == len(level_feat_student) ==len(fd_bboxes)
+        # b = len(level_feat_teacher)
+        level_loss = multi_apply(
+            self.feat_loss_single,
+            fd_bboxes,
+            level_feat_teacher,
+            level_feat_student,
+            stride=stride
+        )
+        device = level_feat_student.device
+        level_loss = torch.Tensor([sum(level_loss[0])]).to(device=device)
+        level_loss.requires_grad = True
+        return level_loss
 
     # for one image
-    def feat_loss_single(self, fd_bbox, teacher_feat, student_feat):
-        # teacher_feat [256, w, h],
+    def feat_loss_single(self, fd_bbox, teacher_feat, student_feat, stride=8):
+        """  
+        Args:
+            fd_bbox: [n, 4]
+            teacher_feat: [256, w, h],
+            stride: scalar
+
+        """
+        # 
 
         # map to the feature map
-        x_min_fmap = fd_bbox[:, 0] // self.strides
-        y_min_fmap = fd_bbox[:, 1] // self.strides
-        x_max_fmap = fd_bbox[:, 2] // self.strides
-        y_max_fmap = fd_bbox[:, 3] // self.strides
+        # x_min_fmap = fd_bbox[:, 0] // self.strides
+        # y_min_fmap = fd_bbox[:, 1] // self.strides
+        # x_max_fmap = fd_bbox[:, 2] // self.strides
+        # y_max_fmap = fd_bbox[:, 3] // self.strides
+
+        x_min_fmap = fd_bbox[:, 0] // stride
+        y_min_fmap = fd_bbox[:, 1] // stride
+        x_max_fmap = fd_bbox[:, 2] // stride
+        y_max_fmap = fd_bbox[:, 3] // stride
 
         bbox_map = torch.stack([x_min_fmap, y_min_fmap, x_max_fmap, y_max_fmap], dim=-1)
         
@@ -185,7 +246,8 @@ class TestV3Head(AnchorHead):
 
         assert len(extract_student_feat) == len(extract_teacher_feat)
         feat_len = len(extract_teacher_feat)
-
+        if feat_len == 0:
+            return torch.Tensor([0.])
         device = fd_bbox.device
         feat_loss_list = []
         for _ in range(feat_len):
@@ -205,6 +267,11 @@ class TestV3Head(AnchorHead):
         return feat_loss
     
     def extract_feat(self, bbox_fmap, feats):
+        """ 
+        Args:
+            bbox_feat: [n, 4]
+            feats: [256, w, h]
+        """
         # Calculate the width and height mapped to the feature map 
         # to determine whether it is empty
         bbox_w = bbox_fmap[:, 2] - bbox_fmap[:, 0]
