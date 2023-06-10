@@ -27,7 +27,7 @@ model = dict(
         add_extra_convs='on_output',
         num_outs=5),
     bbox_head=dict(
-        type='TestV4Head',
+        type='TestV5Head',
         num_classes=80,
         in_channels=256,
         stacked_convs=4,
@@ -193,7 +193,6 @@ strong_pipeline = [
             "scale_factor",
             "tag",
             "transform_matrix",
-            'aug_info',  # 加上增强方式信息
         ),
     ),
 ]
@@ -262,9 +261,6 @@ percent = 10
 data = dict(
     samples_per_gpu=2,
     workers_per_gpu=2,
-
-    # samples_per_gpu=3,
-    # workers_per_gpu=3,
     train=dict(
         _delete_=True,
         type="SemiDataset",
@@ -288,7 +284,6 @@ data = dict(
         train=dict(
             type="SemiBalanceSampler",
             sample_ratio=[1, 1],
-            # sample_ratio=[1, 2],
             by_prob=True,
             # at_least_one=True,
             epoch_length=7330,
@@ -296,8 +291,10 @@ data = dict(
     ),
 )
 
+max_iters = 180000*4
+
 semi_wrapper = dict(
-    type="TestV4Teacher",
+    type="TestV5Teacher",
     model="${model}",
     train_cfg=dict(
         use_teacher_proposal=False,
@@ -309,6 +306,9 @@ semi_wrapper = dict(
         # warmup_step=90000,
         # warmup_step=250000,
         # warmup_step=-1,
+        t1 = 180000,
+        t2 = 360000,
+        feat_weight=0.1,
 
     ),
     test_cfg=dict(inference_on="teacher",),
@@ -317,16 +317,16 @@ semi_wrapper = dict(
 custom_hooks = [
     dict(type="NumClassCheckHook"),
     dict(type="WeightSummary"),
-    # dict(type='SetIterInfoHook'),
+    dict(type='SetIterInfoHook'),
     dict(type="MeanTeacher", momentum=0.9998, interval=1, warm_up=0),
 ]
-evaluation = dict(type="SubModulesDistEvalHook", evaluated_modules=['teacher'], interval=4001, start=10000)
+evaluation = dict(type="SubModulesDistEvalHook", evaluated_modules=['teacher'], interval=4000, start=10000)
 optimizer = dict(type="SGD", lr=0.00125, momentum=0.9, weight_decay=0.0001)
 optimizer_config = dict(
     _delete_=True, grad_clip=dict(max_norm=20, norm_type=2))
-lr_config = dict(step=[180000*4],
+lr_config = dict(step=["${max_iters}"],
                  warmup_iters=500*4,)
-runner = dict(_delete_=True, type="IterBasedRunner", max_iters=180000*4)
+runner = dict(_delete_=True, type="IterBasedRunner", max_iters="${max_iters}")
 checkpoint_config = dict(by_epoch=False, interval=10000, max_keep_ckpts=20)
 
 

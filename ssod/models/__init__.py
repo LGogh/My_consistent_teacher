@@ -17,3 +17,5 @@ from .test_v3_teacher import TestV3Teacher
 
 from .dynamic_aug_net import AugWeight
 from .test_v4_teacher import TestV4Teacher
+
+from .test_v5_teacher import TestV5Teacher

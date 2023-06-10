@@ -44,17 +44,17 @@ class TestV3Teacher(MultiSteamDetector):
         #! In some situation, we can only put one image per gpu, we have to return the sum of loss
         #! and log the loss with logger instead. Or it will try to sync tensors don't exist.
 
-        # if "sup" in data_groups:
-        #     gt_bboxes = data_groups["sup"]["gt_bboxes"]
-        #     log_every_n(
-        #         {"sup_gt_num": sum([len(bbox)
-        #                            for bbox in gt_bboxes]) / len(gt_bboxes)}
-        #     )
-        #     sup_loss = self.student.forward_train(**data_groups["sup"])
-        #     sup_loss['num_gts'] = torch.tensor(
-        #         sum([len(b) for b in gt_bboxes]) / len(gt_bboxes)).to(gt_bboxes[0])
-        #     sup_loss = {"sup_" + k: v for k, v in sup_loss.items()}
-        #     loss.update(**sup_loss)
+        if "sup" in data_groups:
+            gt_bboxes = data_groups["sup"]["gt_bboxes"]
+            log_every_n(
+                {"sup_gt_num": sum([len(bbox)
+                                   for bbox in gt_bboxes]) / len(gt_bboxes)}
+            )
+            sup_loss = self.student.forward_train(**data_groups["sup"])
+            sup_loss['num_gts'] = torch.tensor(
+                sum([len(b) for b in gt_bboxes]) / len(gt_bboxes)).to(gt_bboxes[0])
+            sup_loss = {"sup_" + k: v for k, v in sup_loss.items()}
+            loss.update(**sup_loss)
 
         if "unsup_student" in data_groups:
             unsup_loss = weighted_loss(

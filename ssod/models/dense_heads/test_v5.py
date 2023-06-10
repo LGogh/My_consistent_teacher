@@ -12,7 +12,7 @@ from numpy import isin
 
 
 @HEADS.register_module()
-class TestV3Head(AnchorHead):
+class TestV5Head(AnchorHead):
     """Mostly the same with ATSS except for the anchor assignment. 
 
     ATSS head structure is similar with FCOS, however ATSS use anchor boxes
@@ -42,7 +42,7 @@ class TestV3Head(AnchorHead):
         self.stacked_convs = stacked_convs
         self.conv_cfg = conv_cfg
         self.norm_cfg = norm_cfg
-        super(TestV3Head, self).__init__(
+        super(TestV5Head, self).__init__(
             num_classes,
             in_channels,
             reg_decoded_bbox=reg_decoded_bbox,

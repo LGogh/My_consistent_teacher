@@ -830,9 +830,9 @@ class HighRecallHeadV0(AnchorHead):
                     # with torch.no_grad():
                     delta = top2_score[:, 0] - top2_score[:, 1]
                     label_weights[pos_inds] = torch.pow(delta, 2) * 5
-                    from ssod.utils import log_every_n
-                    log_every_n({"delta_score": delta})
-                    log_every_n({"top1_score": top2_score[:, 0]})
+                    # from ssod.utils import log_every_n
+                    # log_every_n({"delta_score": delta})
+                    # log_every_n({"top1_score": top2_score[:, 0]})
 
         if len(neg_inds) > 0:
             label_weights[neg_inds] = 1.0
