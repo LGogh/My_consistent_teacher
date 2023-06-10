@@ -48,7 +48,10 @@ model = dict(
             gamma=2.0,
             alpha=0.25,
             loss_weight=1.0),
-        loss_bbox=dict(type='GIoULoss', loss_weight=2.0)),
+        loss_bbox=dict(type='GIoULoss', loss_weight=2.0),
+        loss_feat=dict(type='MSELoss',)
+        ),
+        
     # training and testing settings
     train_cfg=dict(
         assigner=dict(

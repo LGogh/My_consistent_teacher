@@ -1,0 +1,447 @@
+from collections import OrderedDict
+
+import torch
+from mmcv.runner.fp16_utils import force_fp32
+from mmdet.core import bbox2roi, multi_apply
+from mmdet.core.utils import reduce_mean
+from mmdet.models import DETECTORS, build_detector
+from ssod.utils import log_every_n, log_image_with_boxes
+from ssod.utils.structure_utils import dict_split, weighted_loss
+
+from .multi_stream_detector import MultiSteamDetector
+from .utils import Transform2D, filter_invalid
+from .utils import filter_with_score
+
+# from .dynamic_aug_net import AugWeight
+
+import torch
+import torch.nn as nn
+
+# dynamic aug
+# thr = mean + alpha_t*std
+# feat loss
+
+@DETECTORS.register_module()
+class TestV6Teacher(MultiSteamDetector):
+    def __init__(self, model: dict, train_cfg=None, test_cfg=None):
+        super().__init__(
+            dict(teacher=build_detector(model), student=build_detector(model)),
+            train_cfg=train_cfg,
+            test_cfg=test_cfg,
+        )
+        if train_cfg is not None:
+            self.freeze("teacher")
+            self.unsup_weight = self.train_cfg.unsup_weight
+            
+            self.t1 = self.train_cfg.t1
+            self.t2 = self.train_cfg.t2
+            self.feat_weight = self.train_cfg.feat_weight
+
+        self.writer = None
+
+        self.iter = 0
+
+        # self.aug_weight = AugWeight(transforms_len=9)
+
+        self.transforms_len = 9
+        self.pool_size = 9
+        # conv
+        self.conv1 = nn.Conv2d(in_channels=3, out_channels=64, kernel_size=3, stride=2)
+        self.conv2 = nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=2)
+        # AdaptiveAvgPool2d() 会得到 inf 
+        self.pooling = nn.AdaptiveMaxPool2d(self.pool_size)
+        self.fc1 = nn.Linear(self.pool_size * self.pool_size * 3, 64)
+        self.fc_trans = nn.Linear(64, self.transforms_len)
+        self.sigmoid = nn.Sigmoid()
+        # self.softmax = nn.Softmax(dim=1)
+        self.relu = nn.ReLU()
+
+    
+    def set_iter(self, step):
+        self.iter = step
+    
+    def get_alpha_t(self, ):
+        alpha_t = 1.
+        if self.iter < self.t1:
+            alpha_t = 1.
+        elif self.iter >= self.t1 and self.iter < self.t2:
+            alpha_t = ((self.iter - self.t1) / (self.t2 - self.t1) + 1.)
+        elif self.iter >= self.t2:
+            alpha_t = 2
+        return alpha_t
+
+    def forward_train(self, img, img_metas, **kwargs):
+        super().forward_train(img, img_metas, **kwargs)
+        kwargs.update({"img": img})
+        kwargs.update({"img_metas": img_metas})
+        kwargs.update({"tag": [meta["tag"] for meta in img_metas]})
+        # split the data into labeled and unlabeled through 'tag'
+        data_groups = dict_split(kwargs, "tag")
+        for _, v in data_groups.items():
+            v.pop("tag")
+
+        loss = {}
+        #! Warnings: By splitting losses for supervised data and unsupervised data with different names,
+        #! it means that at least one sample for each group should be provided on each gpu.
+        #! In some situation, we can only put one image per gpu, we have to return the sum of loss
+        #! and log the loss with logger instead. Or it will try to sync tensors don't exist.
+
+        if "sup" in data_groups:
+            gt_bboxes = data_groups["sup"]["gt_bboxes"]
+            log_every_n(
+                {"sup_gt_num": sum([len(bbox)
+                                   for bbox in gt_bboxes]) / len(gt_bboxes)}
+            )
+            sup_loss = self.student.forward_train(**data_groups["sup"])
+            sup_loss['num_gts'] = torch.tensor(
+                sum([len(b) for b in gt_bboxes]) / len(gt_bboxes)).to(gt_bboxes[0])
+            sup_loss = {"sup_" + k: v for k, v in sup_loss.items()}
+            loss.update(**sup_loss)
+
+        if "unsup_student" in data_groups:
+            unsup_loss = weighted_loss(
+                self.foward_unsup_train(
+                    data_groups["unsup_teacher"], data_groups["unsup_student"],
+                ),
+                weight=self.unsup_weight,
+            )
+            unsup_loss = {"unsup_" + k: v for k, v in unsup_loss.items()}
+            loss.update(**unsup_loss)
+
+        if self.train_cfg.get('collect_keys', None):
+            # In case of only sup or unsup images
+            num_sup = len(data_groups["sup"]['img']
+                          ) if 'sup' in data_groups else 0
+            num_unsup = len(
+                data_groups['unsup_student']['img']) if 'unsup_student' in data_groups else 0
+            num_sup = img.new_tensor(num_sup)
+            avg_num_sup = reduce_mean(num_sup).clamp(min=1e-5)
+            num_unsup = img.new_tensor(num_unsup)
+            avg_num_unsup = reduce_mean(num_unsup).clamp(min=1e-5)
+            collect_keys = self.train_cfg.collect_keys
+            losses = OrderedDict()
+            for k in collect_keys:
+                if k in loss:
+                    v = loss[k]
+                    if isinstance(v, torch.Tensor):
+                        losses[k] = v.mean()
+                    elif isinstance(v, list):
+                        losses[k] = sum(_loss.mean() for _loss in v)
+                else:
+                    losses[k] = img.new_tensor(0)
+            loss = losses
+            for key in loss:
+                if key.startswith('sup_'):
+                    loss[key] = loss[key] * num_sup / avg_num_sup
+                elif key.startswith('unsup_'):
+                    loss[key] = loss[key] * num_unsup / avg_num_unsup
+        return loss
+
+    def get_aug_weight(self, student_data):
+            # img tensor (, 3, w, h)
+            # (b, 9)
+            # trans_weights = self.aug_weight(student_data.get("img"))
+            trans_weights = self.forward_aug_weight(student_data.get("img"))
+            transforms = [
+                            "Identity",
+                            "AutoContrast",
+                            "RandEqualize",
+                            "RandSolarize",
+                            "RandColor",
+                            "RandContrast",
+                            "RandBrightness",
+                            "RandSharpness",
+                            "RandPosterize",
+            ]
+            
+            num_imgs = len(student_data["img_metas"])
+            # (b)
+            trans_weight = []
+
+            for _ in range(num_imgs):
+                # aug: resize, flip, Shuffled(oneof, oneof)
+                aug_type_1 = student_data["img_metas"][_]["aug_info"][2]["type"]
+                aug_type_2 = student_data["img_metas"][_]["aug_info"][3]["type"]
+                
+                if aug_type_1 in transforms:
+                    # get the index of trans
+                    trans_idx = transforms.index(aug_type_1)
+                else:
+                    if aug_type_2 == "RandShear":
+                        trans_idx = transforms.index(student_data["img_metas"][_]["aug_info"][4]["type"])        
+                    else:
+                        trans_idx = transforms.index(aug_type_2)
+                # get the weight of trans
+                trans_weight.append(trans_weights[_][trans_idx])
+            return trans_weight
+
+    def forward_aug_weight(self, img):
+        if torch.isnan(img).any() or torch.isinf(img).any():
+            img = torch.where(torch.isnan(img), torch.full_like(img, 0), img)
+            img = torch.where(torch.isinf(img), torch.full_like(img, 1), img)
+
+        feat = self.conv1(img)
+        feat = self.conv2(feat)
+        # feat = self.norm(feat)
+        feat = self.relu(feat)
+        # (b, c, h, w) -> (b, c, 9, 9)
+        feat = self.pooling(img)
+        # (b, c*9*9)
+        feat = feat.flatten(start_dim=1)
+        # (b, 64)
+        feat = self.fc1(feat)
+        feat = self.relu(feat)
+        # (b, 9)
+        feat_trans = self.fc_trans(feat)
+        # (b, 9)
+        trans_prob = self.sigmoid(feat_trans)
+
+        return trans_prob
+
+    def foward_unsup_train(self, teacher_data, student_data):
+        # sort the teacher output according to the order of student input to avoid some bugs
+        tnames = [meta["filename"] for meta in teacher_data["img_metas"]]
+        snames = [meta["filename"] for meta in student_data["img_metas"]]
+        tidx = [tnames.index(name) for name in snames]
+        with torch.no_grad():
+            teacher_info = self.extract_teacher_info(
+                teacher_data["img"][
+                    torch.Tensor(tidx).to(teacher_data["img"].device).long()
+                ],
+                [teacher_data["img_metas"][idx] for idx in tidx]
+            )
+        student_info = self.extract_student_info(**student_data)
+
+        trans_weight = self.get_aug_weight(student_data)
+
+        # for name, param in self.named_parameters():
+        #     if param.grad is not None:
+        #         print("not None " + name)
+        #     if param.grad is None:
+        #         print("None " + name)
+
+        return self.compute_pseudo_label_loss(student_info, teacher_info, trans_weight)
+
+    def compute_pseudo_label_loss(self, student_info, teacher_info, trans_weight):
+        M = self._get_trans_mat(
+            teacher_info["transform_matrix"], student_info["transform_matrix"]
+        )
+
+        pseudo_bboxes = self._transform_bbox(
+            teacher_info["det_bboxes"],
+            M,
+            [meta["img_shape"] for meta in student_info["img_metas"]],
+        )
+        pseudo_labels = teacher_info["det_labels"]
+        loss = {}
+
+        alpha_t = self.get_alpha_t()
+        thrs = self.get_thrs(pseudo_bboxes=pseudo_bboxes, alpha_t=alpha_t)
+        gt_bboxes, gt_labels, fd_bboxes = self.bbox_filter(pseudo_bboxes, 
+                                                pseudo_labels,
+                                                thrs)
+
+
+
+        bbox_loss, proposal_list = self.bbox_loss(
+            student_info["bbox_out"],
+            # pseudo_bboxes,
+            # pseudo_labels,
+            gt_bboxes,
+            gt_labels,
+            student_info["img_metas"],
+            student_info=student_info,
+            trans_weight=trans_weight,
+        )
+        loss.update(bbox_loss)
+
+        # feature distill loss
+        feat_loss = self.student.bbox_head.feat_loss(fd_bboxes,
+                                   teacher_info["backbone_feature"],
+                                   student_info["backbone_feature"])
+        feat_loss = weighted_loss(feat_loss, self.feat_weight)
+        loss.update(feat_loss)
+
+
+        return loss
+    
+    # get the dynmaic thr
+    def get_thrs(self, pseudo_bboxes, alpha_t=1.):
+        # dynamic thr = mean(score)+var(score)
+        scores = [bbox[:, 4] for bbox in pseudo_bboxes]
+        thrs = [torch.mean(score) + alpha_t * torch.var(score) for score in scores]
+
+        log_every_n(
+            {"thr": sum(thrs) / len(thrs)}
+        )
+        log_every_n(
+            {"alpha_t": alpha_t}
+        )
+
+        return thrs
+    
+    # filter the bboxes with the dynamic thr
+    def bbox_filter(self, 
+        pseudo_bboxes,
+        pseudo_labels,
+        thrs,
+    ):
+        gt_bboxes, gt_labels, fd_bboxes, _ = multi_apply(
+            filter_with_score,
+            [bbox[:, :4] for bbox in pseudo_bboxes],
+            pseudo_labels,
+            [bbox[:, 4] for bbox in pseudo_bboxes],
+            thrs,
+        )
+
+        return gt_bboxes, gt_labels, fd_bboxes
+    
+
+    def bbox_loss(
+        self,
+        bbox_out,
+        # pseudo_bboxes,
+        # pseudo_labels,
+        gt_bboxes,
+        gt_labels,
+        img_metas,
+        gt_bboxes_ignore=None,
+        student_info=None,
+        trans_weight=None,
+        **kwargs,
+    ):
+
+        num_gts = [len(bbox) for bbox in gt_bboxes]
+        log_every_n(
+            {"bbox_gt_num": sum(num_gts) / len(gt_bboxes)}
+        )
+        loss_inputs = bbox_out + [gt_bboxes, gt_labels, img_metas]
+        losses = self.student.bbox_head.loss(
+            *loss_inputs, gt_bboxes_ignore=gt_bboxes_ignore,
+            trans_weight=trans_weight,
+        )
+
+        if len([n for n in num_gts if n > 0]) < len(num_gts) / 2.:
+            # TODO: Design a better way to deal with images without pseudo bbox.
+            losses = weighted_loss(
+                losses, weight=self.train_cfg.get('background_weight', 1e-2))
+        losses['num_gts'] = torch.tensor(
+            sum([len(bbox) for bbox in gt_bboxes]) / len(gt_bboxes)).to(
+            gt_bboxes[0])
+        bbox_list = self.student.bbox_head.get_bboxes(
+            *bbox_out, img_metas=img_metas)
+
+        log_image_with_boxes(
+            "bbox",
+            student_info["img"][0],
+            gt_bboxes[0],
+            bbox_tag="pseudo_label",
+            labels=gt_labels[0],
+            class_names=self.CLASSES,
+            interval=500,
+            img_norm_cfg=student_info["img_metas"][0]["img_norm_cfg"]
+        )
+        return losses, bbox_list
+
+    @force_fp32(apply_to=["bboxes", "trans_mat"])
+    def _transform_bbox(self, bboxes, trans_mat, max_shape):
+        bboxes = Transform2D.transform_bboxes(bboxes, trans_mat, max_shape)
+        return bboxes
+
+    @force_fp32(apply_to=["a", "b"])
+    def _get_trans_mat(self, a, b):
+        return [bt @ at.inverse() for bt, at in zip(b, a)]
+
+    def extract_student_info(self, img, img_metas, **kwargs):
+        student_info = {}
+        student_info["img"] = img
+        feat = self.student.extract_feat(img)
+        student_info["backbone_feature"] = feat
+        bbox_out = self.student.bbox_head(feat)
+        student_info["bbox_out"] = list(bbox_out)
+        student_info["img_metas"] = img_metas
+        student_info["transform_matrix"] = [
+            torch.from_numpy(meta["transform_matrix"]
+                             ).float().to(feat[0][0].device)
+            for meta in img_metas
+        ]
+        return student_info
+
+    def extract_teacher_info(self, img, img_metas, **kwargs):
+        teacher_info = {}
+        feat = self.teacher.extract_feat(img)
+        teacher_info["backbone_feature"] = feat
+        results = \
+            self.teacher.bbox_head.simple_test_bboxes(
+                feat, img_metas, rescale=False)
+        proposal_list = [r[0] for r in results]
+        proposal_label_list = [r[1] for r in results]
+        proposal_list = [p.to(feat[0].device) for p in proposal_list]
+        proposal_list = [
+            p if p.shape[0] > 0 else p.new_zeros(0, 5) for p in proposal_list
+        ]
+        proposal_label_list = [p.to(feat[0].device)
+                               for p in proposal_label_list]
+        # filter invalid box roughly
+        # pseudo_label_initial_score_thr=0.5,
+        if isinstance(self.train_cfg.pseudo_label_initial_score_thr, float):
+            thr = self.train_cfg.pseudo_label_initial_score_thr
+        else:
+            # TODO: use dynamic threshold
+            raise NotImplementedError(
+                "Dynamic Threshold is not implemented yet.")
+        proposal_list, proposal_label_list, _ = list(
+            zip(
+                *[
+                    filter_invalid(
+                        proposal,
+                        proposal_label,
+                        proposal[:, -1],
+                        thr=thr,
+                        # thr=0,
+                        min_size=self.train_cfg.min_pseduo_box_size,
+                    )
+                    for proposal, proposal_label in zip(
+                        proposal_list, proposal_label_list
+                    )
+                ]
+            )
+        )
+        det_bboxes = proposal_list
+        det_labels = proposal_label_list
+        teacher_info["det_bboxes"] = det_bboxes
+        teacher_info["det_labels"] = det_labels
+        teacher_info["transform_matrix"] = [
+            torch.from_numpy(meta["transform_matrix"]
+                             ).float().to(feat[0][0].device)
+            for meta in img_metas
+        ]
+        teacher_info["img_metas"] = img_metas
+        return teacher_info
+
+    def _load_from_state_dict(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
+        if not any(["student" in key or "teacher" in key for key in state_dict.keys()]):
+            keys = list(state_dict.keys())
+            state_dict.update({"teacher." + k: state_dict[k] for k in keys})
+            state_dict.update({"student." + k: state_dict[k] for k in keys})
+            for k in keys:
+                state_dict.pop(k)
+
+        return super()._load_from_state_dict(
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
+        )

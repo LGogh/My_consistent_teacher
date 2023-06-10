@@ -43,7 +43,7 @@ class TestV5Teacher(MultiSteamDetector):
         if self.iter < self.t1:
             alpha_t = 1.
         elif self.iter >= self.t1 and self.iter < self.t2:
-            alpha_t = 2 * (self.iter - self.t1) / (self.t2 - self.t1)
+            alpha_t = ((self.iter - self.t1) / (self.t2 - self.t1) + 1.)
         elif self.iter >= self.t2:
             alpha_t = 2
         return alpha_t
