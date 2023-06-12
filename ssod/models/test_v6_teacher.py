@@ -397,8 +397,8 @@ class TestV6Teacher(MultiSteamDetector):
                         proposal,
                         proposal_label,
                         proposal[:, -1],
-                        thr=thr,
-                        # thr=0,
+                        # thr=thr,
+                        thr=0,
                         min_size=self.train_cfg.min_pseduo_box_size,
                     )
                     for proposal, proposal_label in zip(
