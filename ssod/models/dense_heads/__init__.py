@@ -20,3 +20,5 @@ from .test_v4 import TestV4Head
 from .test_v5 import TestV5Head
 
 from .test_v6 import TestV6Head
+
+from .test_v7 import TestV7Head
