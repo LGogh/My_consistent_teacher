@@ -1,14 +1,12 @@
-# mmdet_base = "../../../mmdetection/configs/_base_"
-mmdet_base = "../../thirdparty/mmdetection/configs/_base_"
+mmdet_base = "../../../mmdetection/configs/_base_"
 _base_ = [
     f"{mmdet_base}/datasets/coco_detection.py",
     f"{mmdet_base}/schedules/schedule_1x.py",
     f"{mmdet_base}/default_runtime.py",
 ]
 
-
 model = dict(
-    type='ATSS',
+    type='RetinaNet',
     backbone=dict(
         type='ResNet',
         depth=50,
@@ -27,16 +25,17 @@ model = dict(
         add_extra_convs='on_output',
         num_outs=5),
     bbox_head=dict(
-        type='TestV6Head',
+        type='LAV1Head',
         num_classes=80,
         in_channels=256,
         stacked_convs=4,
         feat_channels=256,
+        anchor_type='anchor_based',
         anchor_generator=dict(
             type='AnchorGenerator',
-            octave_base_scale=4,
-            scales_per_octave=3,
-            ratios=[0.5, 1.0, 2.0],
+            ratios=[1.0],
+            octave_base_scale=8,
+            scales_per_octave=1,
             strides=[8, 16, 32, 64, 128]),
         bbox_coder=dict(
             type='DeltaXYWHBBoxCoder',
@@ -45,20 +44,16 @@ model = dict(
         loss_cls=dict(
             type='FocalLoss',
             use_sigmoid=True,
+            activated=True,  # use probability instead of logit as input
             gamma=2.0,
             alpha=0.25,
             loss_weight=1.0),
         loss_bbox=dict(type='GIoULoss', loss_weight=2.0)),
-    # training and testing settings
     train_cfg=dict(
-        assigner=dict(
-            type='MaxIoUAssigner',
-            pos_iou_thr=0.5,
-            neg_iou_thr=0.4,
-            min_pos_iou=0,
-            ignore_iof_thr=-1),
+        assigner=dict(type='DynamicSoftLabelAssigner', topk=13, iou_factor=2.0),
+        alpha=1,
+        beta=6,
         allowed_border=-1,
-        # pos_weight=5, 
         pos_weight=-1,
         debug=False),
     test_cfg=dict(
@@ -193,7 +188,6 @@ strong_pipeline = [
             "scale_factor",
             "tag",
             "transform_matrix",
-            'aug_info',  # 加上增强方式信息
         ),
     ),
 ]
@@ -258,91 +252,82 @@ test_pipeline = [
 ]
 
 fold = 1
-percent = 1
+percent = 10
 data = dict(
-    samples_per_gpu=2,
-    workers_per_gpu=2,
-    # samples_per_gpu=5,
-    # workers_per_gpu=5,
+    samples_per_gpu=4,
+    workers_per_gpu=4,
     train=dict(
         _delete_=True,
         type="SemiDataset",
         sup=dict(
             type="CocoDataset",
-            ann_file="data/coco/annotations/semi_supervised/instances_train2017.${fold}@${percent}.json",
+            ann_file="data/coco_semi/semi_supervised/instances_train2017.${fold}@${percent}.json",
             img_prefix="data/coco/train2017/",
             pipeline=train_pipeline,
         ),
         unsup=dict(
             type="CocoDataset",
-            ann_file="data/coco/annotations/semi_supervised/instances_train2017.${fold}@${percent}-unlabeled.json",
+            ann_file="data/coco_semi/semi_supervised/instances_train2017.${fold}@${percent}-unlabeled.json",
             img_prefix="data/coco/train2017/",
             pipeline=unsup_pipeline,
             filter_empty_gt=False,
         ),
     ),
-    val=dict(pipeline=test_pipeline),
-    test=dict(pipeline=test_pipeline),
+    val=dict(
+        img_prefix="data/coco/val2017/",
+        ann_file='data/coco/annotations/instances_val2017.json',
+        pipeline=test_pipeline
+    ),
+    test=dict(
+        pipeline=test_pipeline,
+        img_prefix="data/coco/val2017/",
+        ann_file='data/coco/annotations/instances_val2017.json'
+    ),
     sampler=dict(
         train=dict(
             type="SemiBalanceSampler",
             sample_ratio=[1, 1],
-            # sample_ratio=[1, 4],
-            by_prob=True,
+            by_prob=False,
             # at_least_one=True,
             epoch_length=7330,
         )
     ),
 )
 
-max_iters = 180000*4
-
 semi_wrapper = dict(
-    type="TestV6Teacher",
+    type="LAV1Teacher",
     model="${model}",
     train_cfg=dict(
-        use_teacher_proposal=False,
-        pseudo_label_initial_score_thr=0.5,
-        cls_pseudo_threshold=0.5,
+        num_scores=100,
+        dynamic_ratio=1.0,
+        warmup_step=10000,
         min_pseduo_box_size=0,
-        unsup_weight=1.0,
-        # unsup_weight=5.0,
-        # warmup_step=90000,
-        # warmup_step=250000,
-        # warmup_step=-1,
-        # unsup_weight=2.0,
-        t1 = 180000,
-        t2 = 360000,
-        # t1 = 90000,
-        # t2 = 180000,
-        feat_weight=0.1,
-
+        unsup_weight=2.0,
     ),
-    test_cfg=dict(inference_on="teacher",),
+    test_cfg=dict(inference_on="teacher"),
 )
+
+max_iters = 180000*2
 
 custom_hooks = [
     dict(type="NumClassCheckHook"),
     dict(type="WeightSummary"),
     dict(type='SetIterInfoHook'),
-    dict(type="MeanTeacher", momentum=0.9998, interval=1, warm_up=0),
-    # dict(type="MeanTeacher", momentum=0.9995, interval=1, warm_up=0),
+    # dict(type="MeanTeacher", momentum=0.9998, interval=1, warm_up=0),
+    dict(type="MeanTeacher", momentum=0.9995, interval=1, warm_up=0),
 ]
 evaluation = dict(type="SubModulesDistEvalHook", evaluated_modules=['teacher'], interval=4000, start=10000)
-optimizer = dict(type="SGD", lr=0.00125, momentum=0.9, weight_decay=0.0001)
-# optimizer = dict(type="SGD", lr=0.005, momentum=0.9, weight_decay=0.0001)
+# optimizer = dict(type="SGD", lr=0.00125, momentum=0.9, weight_decay=0.0001)
+optimizer = dict(type="SGD", lr=0.005, momentum=0.9, weight_decay=0.0001)
 optimizer_config = dict(
     _delete_=True, grad_clip=dict(max_norm=20, norm_type=2))
 lr_config = dict(step=["${max_iters}"],
-                #  warmup_iters=500*2,
-                 warmup_iters=500*4,
-                 )
+                 warmup_iters=500*2,)
 runner = dict(_delete_=True, type="IterBasedRunner", max_iters="${max_iters}")
 checkpoint_config = dict(by_epoch=False, interval=10000, max_keep_ckpts=20)
 
 
 work_dir = "work_dirs/${cfg_name}"
-# work_dir = "/root/autodl-tmp/work_dirs/${cfg_name}"
 log_config = dict(
     interval=50,
     hooks=[

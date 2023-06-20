@@ -66,7 +66,9 @@ model = dict(
         min_bbox_size=0,
         score_thr=0.05,
         nms=dict(type='nms', iou_threshold=0.6),
-        max_per_img=100))
+        # max_per_img=100,
+        max_per_img=50,
+        ))
 
 img_norm_cfg = dict(
     mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_rgb=True)
@@ -260,8 +262,8 @@ test_pipeline = [
 fold = 1
 percent = 1
 data = dict(
-    samples_per_gpu=2,
-    workers_per_gpu=2,
+    samples_per_gpu=4,
+    workers_per_gpu=4,
     # samples_per_gpu=5,
     # workers_per_gpu=5,
     train=dict(
@@ -295,7 +297,7 @@ data = dict(
     ),
 )
 
-max_iters = 180000*4
+max_iters = 180000*2
 
 semi_wrapper = dict(
     type="TestV6Teacher",
@@ -311,10 +313,11 @@ semi_wrapper = dict(
         # warmup_step=250000,
         # warmup_step=-1,
         # unsup_weight=2.0,
-        t1 = 180000,
-        t2 = 360000,
+        t1 = 90000,
+        t2 = 180000,
         # t1 = 90000,
         # t2 = 180000,
+        warmup_step=20000,
         feat_weight=0.1,
 
     ),
@@ -329,8 +332,8 @@ custom_hooks = [
     # dict(type="MeanTeacher", momentum=0.9995, interval=1, warm_up=0),
 ]
 evaluation = dict(type="SubModulesDistEvalHook", evaluated_modules=['teacher'], interval=4000, start=10000)
-optimizer = dict(type="SGD", lr=0.00125, momentum=0.9, weight_decay=0.0001)
-# optimizer = dict(type="SGD", lr=0.005, momentum=0.9, weight_decay=0.0001)
+# optimizer = dict(type="SGD", lr=0.00125, momentum=0.9, weight_decay=0.0001)
+optimizer = dict(type="SGD", lr=0.005, momentum=0.9, weight_decay=0.0001)
 optimizer_config = dict(
     _delete_=True, grad_clip=dict(max_norm=20, norm_type=2))
 lr_config = dict(step=["${max_iters}"],
@@ -364,4 +367,4 @@ log_config = dict(
 
     ],
 )
-fp16 = None
+fp16 = dict(loss_scale=512.)

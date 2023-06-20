@@ -295,7 +295,6 @@ data = dict(
     ),
 )
 
-max_iters = 180000*2
 
 semi_wrapper = dict(
     type="TestV6Teacher",
@@ -320,6 +319,8 @@ semi_wrapper = dict(
     ),
     test_cfg=dict(inference_on="teacher",),
 )
+
+max_iters = 180000*2
 
 custom_hooks = [
     dict(type="NumClassCheckHook"),
