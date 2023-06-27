@@ -56,6 +56,8 @@ class LAV1Head(AnchorHead):
             self.assigner = build_assigner(self.train_cfg.assigner)
 
             self.alignment_assigner = build_assigner(self.train_cfg.assigner)
+            self.alpha = self.train_cfg.alpha
+            self.beta = self.train_cfg.beta
 
             # SSD sampling=False so use PseudoSampler
             sampler_cfg = dict(type='PseudoSampler')

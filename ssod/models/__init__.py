@@ -21,3 +21,5 @@ from .test_v4_teacher import TestV4Teacher
 from .test_v5_teacher import TestV5Teacher
 
 from .test_v6_teacher import TestV6Teacher
+
+from .la_v1_teacher import LAV1Teacher

@@ -25,6 +25,10 @@ class LAV1Teacher(MultiSteamDetector):
             self.freeze("teacher")
             self.unsup_weight = self.train_cfg.unsup_weight
         self.writer = None
+        self.iter = 0
+
+    def set_iter(self, step):
+        self.iter = step
 
     def forward_train(self, img, img_metas, **kwargs):
         super().forward_train(img, img_metas, **kwargs)
@@ -52,12 +56,16 @@ class LAV1Teacher(MultiSteamDetector):
                 sum([len(b) for b in gt_bboxes]) / len(gt_bboxes)).to(gt_bboxes[0])
             sup_loss = {"sup_" + k: v for k, v in sup_loss.items()}
             loss.update(**sup_loss)
+        
+        unsup_weight = self.unsup_weight
+        if self.iter < self.train_cfg.get('warmup_step', -1):
+            unsup_weight = 0
         if "unsup_student" in data_groups:
             unsup_loss = weighted_loss(
                 self.foward_unsup_train(
                     data_groups["unsup_teacher"], data_groups["unsup_student"]
                 ),
-                weight=self.unsup_weight,
+                weight=unsup_weight,
             )
             unsup_loss = {"unsup_" + k: v for k, v in unsup_loss.items()}
             loss.update(**unsup_loss)
