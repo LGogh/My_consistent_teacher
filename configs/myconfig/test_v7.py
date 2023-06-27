@@ -27,7 +27,7 @@ model = dict(
         add_extra_convs='on_output',
         num_outs=5),
     bbox_head=dict(
-        type='TestV6Head',
+        type='TestV7Head',
         num_classes=80,
         in_channels=256,
         stacked_convs=4,
@@ -48,7 +48,10 @@ model = dict(
             gamma=2.0,
             alpha=0.25,
             loss_weight=1.0),
-        loss_bbox=dict(type='GIoULoss', loss_weight=2.0)),
+        loss_bbox=dict(type='GIoULoss', loss_weight=2.0),
+        loss_feat=dict(type='MSELoss',)
+        ),
+        
     # training and testing settings
     train_cfg=dict(
         assigner=dict(
@@ -66,8 +69,8 @@ model = dict(
         min_bbox_size=0,
         score_thr=0.05,
         nms=dict(type='nms', iou_threshold=0.6),
-        # max_per_img=100,
-        max_per_img=50,
+        # max_per_img=100
+        max_per_img=50
         ))
 
 img_norm_cfg = dict(
@@ -195,7 +198,6 @@ strong_pipeline = [
             "scale_factor",
             "tag",
             "transform_matrix",
-            'aug_info',  # 加上增强方式信息
         ),
     ),
 ]
@@ -264,8 +266,6 @@ percent = 10
 data = dict(
     samples_per_gpu=2,
     workers_per_gpu=2,
-    # samples_per_gpu=5,
-    # workers_per_gpu=5,
     train=dict(
         _delete_=True,
         type="SemiDataset",
@@ -289,7 +289,6 @@ data = dict(
         train=dict(
             type="SemiBalanceSampler",
             sample_ratio=[1, 1],
-            # sample_ratio=[1, 4],
             by_prob=True,
             # at_least_one=True,
             epoch_length=7330,
@@ -300,7 +299,7 @@ data = dict(
 max_iters = 180000*4
 
 semi_wrapper = dict(
-    type="TestV6Teacher",
+    type="TestV7Teacher",
     model="${model}",
     train_cfg=dict(
         use_teacher_proposal=False,
@@ -312,11 +311,7 @@ semi_wrapper = dict(
         # warmup_step=90000,
         # warmup_step=250000,
         # warmup_step=-1,
-        # unsup_weight=2.0,
-        t1 = 180000,
-        t2 = 360000,
-        # t1 = 90000,
-        # t2 = 180000,
+
         feat_weight=0.1,
 
     ),
@@ -326,25 +321,20 @@ semi_wrapper = dict(
 custom_hooks = [
     dict(type="NumClassCheckHook"),
     dict(type="WeightSummary"),
-    dict(type='SetIterInfoHook'),
+    # dict(type='SetIterInfoHook'),
     dict(type="MeanTeacher", momentum=0.9998, interval=1, warm_up=0),
-    # dict(type="MeanTeacher", momentum=0.9995, interval=1, warm_up=0),
 ]
 evaluation = dict(type="SubModulesDistEvalHook", evaluated_modules=['teacher'], interval=4000, start=10000)
 optimizer = dict(type="SGD", lr=0.00125, momentum=0.9, weight_decay=0.0001)
-# optimizer = dict(type="SGD", lr=0.005, momentum=0.9, weight_decay=0.0001)
 optimizer_config = dict(
     _delete_=True, grad_clip=dict(max_norm=20, norm_type=2))
 lr_config = dict(step=["${max_iters}"],
-                #  warmup_iters=500*2,
-                 warmup_iters=500*4,
-                 )
+                 warmup_iters=500*4,)
 runner = dict(_delete_=True, type="IterBasedRunner", max_iters="${max_iters}")
 checkpoint_config = dict(by_epoch=False, interval=10000, max_keep_ckpts=20)
 
 
 work_dir = "work_dirs/${cfg_name}"
-# work_dir = "/root/autodl-tmp/work_dirs/${cfg_name}"
 log_config = dict(
     interval=50,
     hooks=[
@@ -353,11 +343,6 @@ log_config = dict(
             type="WandbLoggerHook",
             init_kwargs=dict(
                 project="consistent-teacher",
-<<<<<<< HEAD
-                # project="139",
-
-=======
->>>>>>> 75e78162708f4dc1c40d3b583c4d14ae234bb41d
                 name="${cfg_name}",
                 config=dict(
                     fold="${fold}",
@@ -371,4 +356,5 @@ log_config = dict(
 
     ],
 )
-fp16 = None
+
+fp16 = dict(loss_scale=512.)

@@ -22,4 +22,8 @@ from .test_v5_teacher import TestV5Teacher
 
 from .test_v6_teacher import TestV6Teacher
 
+<<<<<<< HEAD
 from .la_v1_teacher import LAV1Teacher
+=======
+from .test_v7_teacher import TestV7Teacher
+>>>>>>> refs/remotes/origin/master

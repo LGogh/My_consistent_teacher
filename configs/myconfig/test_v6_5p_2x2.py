@@ -350,7 +350,8 @@ log_config = dict(
         dict(
             type="WandbLoggerHook",
             init_kwargs=dict(
-                project="dl-consistent-teacher",
+                # project="consistent-teacher",
+                project="139",
                 name="${cfg_name}",
                 config=dict(
                     fold="${fold}",

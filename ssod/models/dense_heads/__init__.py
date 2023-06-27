@@ -21,4 +21,8 @@ from .test_v5 import TestV5Head
 
 from .test_v6 import TestV6Head
 
+<<<<<<< HEAD
 from .la_v1 import LAV1Head
+=======
+from .test_v7 import TestV7Head
+>>>>>>> refs/remotes/origin/master
